@@ -1,0 +1,1624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Floor Plan Measure</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+    background: #1a1a1a; color: #eee;
+    overflow: hidden;
+  }
+  #toolbar {
+    display: flex; gap: 6px; padding: 8px;
+    background: #2a2a2a; border-bottom: 1px solid #444;
+    align-items: center; flex-wrap: wrap;
+  }
+  #toolbar button, #toolbar label.btn {
+    background: #3a3a3a; color: #eee;
+    border: 1px solid #555; padding: 6px 10px;
+    border-radius: 4px; cursor: pointer; font-size: 13px;
+    line-height: 1;
+  }
+  #toolbar button:hover, #toolbar label.btn:hover { background: #4a4a4a; }
+  #toolbar button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #toolbar button.active { background: #2d5a8a; border-color: #4a8acc; }
+  #toolbar .sep { width: 1px; height: 22px; background: #555; margin: 0 2px; }
+  #toolbar .dropdown { position: relative; display: inline-block; }
+  #toolbar .dropdown-menu {
+    position: absolute; top: calc(100% + 4px); left: 0;
+    background: #2a2a2a; border: 1px solid #555;
+    border-radius: 4px; padding: 4px;
+    display: flex; flex-direction: column; gap: 2px;
+    min-width: 160px; z-index: 50;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+  }
+  #toolbar .dropdown-menu[hidden] { display: none; }
+  #toolbar .dropdown-menu button,
+  #toolbar .dropdown-menu label.menu-item {
+    background: transparent; color: #eee;
+    border: none; padding: 6px 10px;
+    border-radius: 3px; cursor: pointer; font-size: 13px;
+    text-align: left; line-height: 1.4;
+  }
+  #toolbar .dropdown-menu button:hover,
+  #toolbar .dropdown-menu label.menu-item:hover { background: #4a4a4a; }
+  #toolbar .info { font-size: 12px; color: #aaa; margin-left: auto; font-family: monospace; }
+  #main { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+  #canvas-container {
+    flex: 1; position: relative; overflow: hidden;
+    background: #0d0d0d; cursor: crosshair;
+  }
+  #canvas-container.pan-mode { cursor: grab; }
+  #canvas-container.grabbing { cursor: grabbing !important; }
+  #world { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+  #world img { display: block; user-select: none; -webkit-user-drag: none; pointer-events: none; }
+  #world svg { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+  #drop-hint {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: #666; font-size: 16px; pointer-events: none;
+    flex-direction: column; gap: 8px;
+  }
+  #drop-hint .sub { font-size: 13px; color: #555; }
+  #canvas-container.dragover { background: #1a2a3a; }
+  #sidebar {
+    width: 280px; background: #2a2a2a; border-left: 1px solid #444;
+    padding: 12px; overflow-y: auto;
+  }
+  #sidebar h3 {
+    margin: 0 0 8px; font-size: 11px; text-transform: uppercase;
+    color: #888; letter-spacing: 0.8px; font-weight: 600;
+  }
+  .measurement {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 10px; margin-bottom: 4px;
+    background: #333; border-radius: 4px; font-size: 13px;
+    border-left: 3px solid #4a7fbf;
+  }
+  .measurement.calibration { border-left-color: #5fbf6f; background: #2e3a2e; }
+  .measurement.selected { outline: 2px solid #ffaa33; outline-offset: -1px; }
+  .measurement { cursor: pointer; }
+  .measurement .label { color: #fff; font-weight: 500; }
+  .measurement .length-input {
+    background: transparent; color: inherit;
+    font: inherit; font-weight: inherit;
+    border: 1px solid transparent; border-radius: 3px;
+    padding: 1px 4px; margin: -1px -4px;
+    width: 96px;
+  }
+  .measurement .length-input:hover { border-color: #555; }
+  .measurement .length-input:focus {
+    background: #1a1a1a; border-color: #4a8acc; outline: none;
+  }
+  .measurement .meta { color: #999; font-size: 11px; margin-top: 2px; }
+  .measurement .actions { display: flex; gap: 4px; }
+  .measurement button {
+    background: #444; color: #ccc; border: none;
+    padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: 11px;
+  }
+  .measurement button:hover { background: #555; color: #fff; }
+  .measurement button.del:hover { background: #7a3333; color: #fff; }
+  #empty-hint { color: #777; font-size: 12px; font-style: italic; padding: 8px 4px; line-height: 1.5; }
+  #file-input, #project-input { display: none; }
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.65);
+    display: flex; align-items: center; justify-content: center; z-index: 100;
+  }
+  .modal {
+    background: #2a2a2a; border: 1px solid #555;
+    border-radius: 6px; padding: 20px; min-width: 320px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  }
+  .modal h3 { margin: 0 0 6px; font-size: 15px; }
+  .modal p { margin: 0 0 12px; color: #aaa; font-size: 13px; }
+  .modal input {
+    width: 100%; padding: 8px 10px; background: #1a1a1a; color: #fff;
+    border: 1px solid #555; border-radius: 4px; font-size: 14px;
+  }
+  .modal input:focus { outline: none; border-color: #4a8acc; }
+  .modal .actions { margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end; }
+  .modal .actions button {
+    background: #3a3a3a; color: #eee; border: 1px solid #555;
+    padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 13px;
+  }
+  .modal .actions button.primary { background: #2d5a8a; border-color: #4a8acc; }
+  .modal .actions button:hover { background: #4a4a4a; }
+  .modal .actions button.primary:hover { background: #3a6aaa; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <label class="btn" for="file-input">Upload image</label>
+  <input id="file-input" type="file" accept="image/*">
+  <div class="dropdown">
+    <button id="project-menu-btn" type="button" title="Project file operations">Project ▾</button>
+    <div class="dropdown-menu" id="project-menu" hidden>
+      <button id="save-project-btn" type="button" title="Download a project file (image + measurements as a single .fpm.json)">Save project</button>
+      <label class="menu-item" for="project-input">Load project</label>
+      <input id="project-input" type="file" accept=".fpm.json,.json,application/json">
+      <button id="export-btn" type="button" title="Download a PNG with the image and all measurements (E)">Export PNG</button>
+    </div>
+  </div>
+  <span class="sep"></span>
+  <button id="undo-btn" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
+  <button id="redo-btn" title="Redo (Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y)" disabled>Redo</button>
+  <span class="sep"></span>
+  <button id="calibrate-btn" title="Edit the scale-reference length">Set scale…</button>
+  <button id="pan-btn" title="Toggle pan mode (or hold Shift / middle-click)">Pan</button>
+  <button id="rotate-btn" title="Rotate image and measurements 90° clockwise (R)">Rotate 90°</button>
+  <span class="sep"></span>
+  <button id="zoom-out-btn" title="Zoom out">−</button>
+  <button id="zoom-in-btn" title="Zoom in">+</button>
+  <button id="zoom-fit-btn" title="Fit image to view">Fit</button>
+  <button id="zoom-100-btn" title="Actual size">1:1</button>
+  <span class="sep"></span>
+  <button id="clear-lines-btn" title="Remove all measurements">Clear lines</button>
+  <button id="reset-btn" title="Remove image and all measurements">Reset all</button>
+  <span class="info" id="status">No image loaded</span>
+</div>
+<div id="main">
+  <div id="canvas-container">
+    <div id="world">
+      <img id="img" alt="" style="display:none">
+      <svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+    <div id="drop-hint">
+      <div>Drop a floor plan image here or use "Upload image"</div>
+      <div class="sub">PNG, JPG, WebP — anything the browser can render</div>
+    </div>
+  </div>
+  <div id="sidebar">
+    <h3>Measurements</h3>
+    <div id="measurements-list"></div>
+  </div>
+</div>
+<script>
+(function () {
+  const STORAGE_KEY = 'floorplan-measure-v1';
+
+  const defaultState = () => ({
+    imageDataUrl: null,
+    imageW: 0,
+    imageH: 0,
+    lines: [],          // {id, x1, y1, x2, y2, realLength?}
+    calibrationLineId: null,
+    pixelsPerMeter: null,
+    zoom: 1,
+    panX: 0,
+    panY: 0,
+    rotation: 0,        // 0, 90, 180, 270 — clockwise
+  });
+
+  let state = defaultState();
+  let nextLineId = 1;
+  let drawingLine = null;   // {x1, y1}
+  let mouseWorld = null;
+  let panModeToggle = false;
+  let drag = null;          // {x, y, isPan, startPanX, startPanY}
+  let selectedLineId = null;
+
+  const container = document.getElementById('canvas-container');
+  const world = document.getElementById('world');
+  const img = document.getElementById('img');
+  const svg = document.getElementById('svg');
+  const measurementsList = document.getElementById('measurements-list');
+  const statusEl = document.getElementById('status');
+  const dropHint = document.getElementById('drop-hint');
+  const fileInput = document.getElementById('file-input');
+  const panBtn = document.getElementById('pan-btn');
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  // ---------- persistence ----------
+  let saveTimer = null;
+  function save() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch (e) {
+        console.warn('Could not persist state (storage full?):', e);
+      }
+    }, 150);
+  }
+
+  function load() {
+    const data = localStorage.getItem(STORAGE_KEY);
+    if (!data) return;
+    try {
+      const loaded = JSON.parse(data);
+      state = Object.assign(defaultState(), loaded);
+      if (state.lines.length) {
+        nextLineId = Math.max(...state.lines.map(l => l.id)) + 1;
+      }
+      if (state.imageDataUrl) {
+        loadImage(true);
+      } else {
+        applyTransform();
+        render();
+      }
+    } catch (e) {
+      console.warn('Failed to restore state:', e);
+    }
+  }
+
+  // ---------- undo/redo ----------
+  // Snapshot-based history of the data state (lines + calibration).
+  // View state (zoom/pan/rotation) and the image itself are NOT historied.
+  const UNDO_LIMIT = 100;
+  const COALESCE_MS = 1000;
+  const undoStack = [];
+  const redoStack = [];
+  let lastCommitKey = null;
+  let lastCommitAt = 0;
+  const undoBtn = document.getElementById('undo-btn');
+  const redoBtn = document.getElementById('redo-btn');
+
+  function dataSnapshot() {
+    return {
+      lines: state.lines.map(l => ({ ...l })),
+      calibrationLineId: state.calibrationLineId,
+      pixelsPerMeter: state.pixelsPerMeter,
+    };
+  }
+
+  function applySnapshot(snap) {
+    state.lines = snap.lines.map(l => ({ ...l }));
+    state.calibrationLineId = snap.calibrationLineId;
+    state.pixelsPerMeter = snap.pixelsPerMeter;
+    if (selectedLineId != null && !state.lines.some(l => l.id === selectedLineId)) {
+      selectedLineId = null;
+    }
+  }
+
+  // Call before mutating data. coalesceKey lets a run of similar actions
+  // (e.g. arrow-key nudges) collapse into a single undo step.
+  function commit(coalesceKey) {
+    const now = Date.now();
+    if (coalesceKey && coalesceKey === lastCommitKey && (now - lastCommitAt) < COALESCE_MS) {
+      lastCommitAt = now;
+      redoStack.length = 0;
+      updateUndoButtons();
+      return;
+    }
+    undoStack.push(dataSnapshot());
+    if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+    redoStack.length = 0;
+    lastCommitKey = coalesceKey || null;
+    lastCommitAt = now;
+    updateUndoButtons();
+  }
+
+  function undo() {
+    if (drag || !undoStack.length) return;
+    const snap = undoStack.pop();
+    redoStack.push(dataSnapshot());
+    applySnapshot(snap);
+    lastCommitKey = null;
+    drawingLine = null;
+    updateUndoButtons();
+    save();
+    render();
+  }
+
+  function redo() {
+    if (drag || !redoStack.length) return;
+    const snap = redoStack.pop();
+    undoStack.push(dataSnapshot());
+    applySnapshot(snap);
+    lastCommitKey = null;
+    drawingLine = null;
+    updateUndoButtons();
+    save();
+    render();
+  }
+
+  function clearHistory() {
+    undoStack.length = 0;
+    redoStack.length = 0;
+    lastCommitKey = null;
+    updateUndoButtons();
+  }
+
+  function updateUndoButtons() {
+    undoBtn.disabled = undoStack.length === 0;
+    redoBtn.disabled = redoStack.length === 0;
+  }
+
+  // ---------- save / load project ----------
+  // Single self-contained JSON file: image (as data URL) + all measurement state.
+  // No external library — the image is already stored as a base64 data URL.
+  const PROJECT_FORMAT = 'floorplan-measure';
+  const PROJECT_VERSION = 1;
+  const projectInput = document.getElementById('project-input');
+
+  function saveProject() {
+    if (!state.imageDataUrl) {
+      alert('Nothing to save — upload an image first.');
+      return;
+    }
+    const payload = {
+      format: PROJECT_FORMAT,
+      version: PROJECT_VERSION,
+      savedAt: new Date().toISOString(),
+      state,
+    };
+    const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'floorplan-project.fpm.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function loadProject(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      let payload;
+      try {
+        payload = JSON.parse(reader.result);
+      } catch (e) {
+        alert('Could not load: file is not valid JSON.');
+        return;
+      }
+      if (!payload || payload.format !== PROJECT_FORMAT || !payload.state || !Array.isArray(payload.state.lines)) {
+        alert('Could not load: this does not look like a Floor Plan Measure project file.');
+        return;
+      }
+      state = Object.assign(defaultState(), payload.state);
+      nextLineId = state.lines.length ? Math.max(...state.lines.map(l => l.id)) + 1 : 1;
+      drawingLine = null;
+      selectedLineId = null;
+      clearHistory();
+      if (state.imageDataUrl) {
+        loadImage(true);
+      } else {
+        applyTransform();
+        render();
+      }
+      save();
+    };
+    reader.onerror = () => alert('Could not read the project file.');
+    reader.readAsText(file);
+  }
+
+  function looksLikeProject(file) {
+    const name = (file.name || '').toLowerCase();
+    return name.endsWith('.fpm.json') || name.endsWith('.fpm') || file.type === 'application/json';
+  }
+
+  // ---------- image loading ----------
+  function loadImage(preserveView) {
+    img.onload = () => {
+      state.imageW = img.naturalWidth;
+      state.imageH = img.naturalHeight;
+      img.style.display = '';
+      dropHint.style.display = 'none';
+      if (!preserveView) {
+        fitToView();
+      } else {
+        applyTransform();
+        render();
+      }
+      save();
+    };
+    img.onerror = () => {
+      console.warn('Saved image failed to load — clearing.');
+      state.imageDataUrl = null;
+      save();
+    };
+    img.src = state.imageDataUrl;
+  }
+
+  function loadFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      state = defaultState();
+      state.imageDataUrl = reader.result;
+      drawingLine = null;
+      selectedLineId = null;
+      clearHistory();
+      loadImage(false);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  fileInput.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (file) loadFile(file);
+    fileInput.value = '';
+  });
+
+  container.addEventListener('dragover', e => {
+    e.preventDefault();
+    container.classList.add('dragover');
+  });
+  container.addEventListener('dragleave', e => {
+    if (e.target === container) container.classList.remove('dragover');
+  });
+  container.addEventListener('drop', e => {
+    e.preventDefault();
+    container.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    if (looksLikeProject(file)) loadProject(file);
+    else if (file.type.startsWith('image/')) loadFile(file);
+  });
+
+  // ---------- rotation helpers ----------
+  function normRotation() {
+    return ((state.rotation % 360) + 360) % 360;
+  }
+
+  // Translation that puts the rotated image's bbox at (0,0).
+  // Transform order applied to a point p: rotate(θ), then translate(tx, ty).
+  function rotationOffset() {
+    const r = normRotation();
+    if (r === 90)  return [state.imageH, 0];
+    if (r === 180) return [state.imageW, state.imageH];
+    if (r === 270) return [0, state.imageW];
+    return [0, 0];
+  }
+
+  function rotatedBBox() {
+    const r = normRotation();
+    return (r === 90 || r === 270)
+      ? [state.imageH, state.imageW]
+      : [state.imageW, state.imageH];
+  }
+
+  // Image-pixel coords → world coords (the space scale/pan act on).
+  function imageToWorld(px, py) {
+    const [tx, ty] = rotationOffset();
+    const θ = normRotation() * Math.PI / 180;
+    const c = Math.cos(θ), s = Math.sin(θ);
+    return { x: tx + (px * c - py * s), y: ty + (px * s + py * c) };
+  }
+
+  // ---------- coords ----------
+  function screenToWorld(sx, sy) {
+    const rect = container.getBoundingClientRect();
+    // Undo translate(panX, panY) scale(zoom)
+    let x = (sx - rect.left - state.panX) / state.zoom;
+    let y = (sy - rect.top - state.panY) / state.zoom;
+    // Undo translate(tx, ty) rotate(θ) — returns image-pixel coords.
+    const [tx, ty] = rotationOffset();
+    x -= tx;
+    y -= ty;
+    const θ = -normRotation() * Math.PI / 180;
+    const c = Math.cos(θ), s = Math.sin(θ);
+    return { x: x * c - y * s, y: x * s + y * c };
+  }
+
+  function applyTransform() {
+    const [tx, ty] = rotationOffset();
+    world.style.transform =
+      `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})` +
+      ` translate(${tx}px, ${ty}px) rotate(${state.rotation}deg)`;
+    updateStatus();
+  }
+
+  // ---------- rendering ----------
+  function render() {
+    svg.setAttribute('width', state.imageW || 0);
+    svg.setAttribute('height', state.imageH || 0);
+    svg.setAttribute('viewBox', `0 0 ${state.imageW || 1} ${state.imageH || 1}`);
+
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+    const z = state.zoom;
+    const scale = 1 / z;
+    const strokeW = 2 * scale;
+    const handleR = 4 * scale;
+    const fontSize = 13 * scale;
+    const labelOffset = 10 * scale;
+
+    for (const line of state.lines) {
+      const isCal = line.id === state.calibrationLineId;
+      drawLine(line, isCal ? '#5fbf6f' : '#4a9fff', strokeW, handleR, fontSize, labelOffset);
+    }
+
+    if (drawingLine && mouseWorld) {
+      drawPreview(strokeW, fontSize, labelOffset);
+    }
+
+    const areaFontSize = 15 * scale;
+    for (const a of findLoopAreas()) {
+      drawAreaLabel(a, areaFontSize);
+    }
+
+    renderMeasurements();
+    updateStatus();
+  }
+
+  function drawLine(line, color, strokeW, handleR, fontSize, labelOffset) {
+    const isSelected = line.id === selectedLineId;
+    const sw = isSelected ? strokeW * 1.8 : strokeW;
+    const hr = isSelected ? handleR * 1.5 : handleR;
+
+    const ln = document.createElementNS(SVG_NS, 'line');
+    ln.setAttribute('x1', line.x1);
+    ln.setAttribute('y1', line.y1);
+    ln.setAttribute('x2', line.x2);
+    ln.setAttribute('y2', line.y2);
+    ln.setAttribute('stroke', color);
+    ln.setAttribute('stroke-width', sw);
+    ln.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(ln);
+
+    for (const [x, y] of [[line.x1, line.y1], [line.x2, line.y2]]) {
+      const c = document.createElementNS(SVG_NS, 'circle');
+      c.setAttribute('cx', x);
+      c.setAttribute('cy', y);
+      c.setAttribute('r', hr);
+      c.setAttribute('fill', color);
+      if (isSelected) {
+        c.setAttribute('stroke', '#ffaa33');
+        c.setAttribute('stroke-width', strokeW);
+      }
+      svg.appendChild(c);
+    }
+
+    const lengthM = computeLengthMeters(line);
+    if (lengthM != null) {
+      drawLabel(line, formatLength(lengthM), color, fontSize, labelOffset);
+    }
+  }
+
+  function drawPreview(strokeW, fontSize, labelOffset) {
+    const dash = 5 / state.zoom;
+    const ln = document.createElementNS(SVG_NS, 'line');
+    ln.setAttribute('x1', drawingLine.x1);
+    ln.setAttribute('y1', drawingLine.y1);
+    ln.setAttribute('x2', mouseWorld.x);
+    ln.setAttribute('y2', mouseWorld.y);
+    ln.setAttribute('stroke', '#ffaa33');
+    ln.setAttribute('stroke-width', strokeW);
+    ln.setAttribute('stroke-dasharray', `${dash} ${dash}`);
+    ln.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(ln);
+
+    const c = document.createElementNS(SVG_NS, 'circle');
+    c.setAttribute('cx', drawingLine.x1);
+    c.setAttribute('cy', drawingLine.y1);
+    c.setAttribute('r', 4 / state.zoom);
+    c.setAttribute('fill', '#ffaa33');
+    svg.appendChild(c);
+
+    if (state.pixelsPerMeter) {
+      const dx = mouseWorld.x - drawingLine.x1;
+      const dy = mouseWorld.y - drawingLine.y1;
+      const lengthM = Math.sqrt(dx * dx + dy * dy) / state.pixelsPerMeter;
+      drawLabel(
+        { x1: drawingLine.x1, y1: drawingLine.y1, x2: mouseWorld.x, y2: mouseWorld.y },
+        formatLength(lengthM), '#ffaa33', fontSize, labelOffset
+      );
+    }
+  }
+
+  function drawAreaLabel(label, fontSize) {
+    const t = document.createElementNS(SVG_NS, 'text');
+    t.setAttribute('x', label.cx);
+    t.setAttribute('y', label.cy);
+    t.setAttribute('font-size', fontSize);
+    t.setAttribute('font-family', 'monospace');
+    t.setAttribute('font-weight', '600');
+    t.setAttribute('fill', '#ffd54a');
+    t.setAttribute('stroke', '#000');
+    t.setAttribute('stroke-width', fontSize * 0.3);
+    t.setAttribute('stroke-linejoin', 'round');
+    t.setAttribute('paint-order', 'stroke');
+    t.setAttribute('text-anchor', 'middle');
+    t.setAttribute('dominant-baseline', 'middle');
+    if (state.rotation) {
+      t.setAttribute('transform', `rotate(${-state.rotation}, ${label.cx}, ${label.cy})`);
+    }
+    t.textContent = formatArea(label.areaM2);
+    svg.appendChild(t);
+  }
+
+  function drawLabel(line, text, color, fontSize, labelOffset) {
+    const mx = (line.x1 + line.x2) / 2;
+    const my = (line.y1 + line.y2) / 2;
+    const dx = line.x2 - line.x1;
+    const dy = line.y2 - line.y1;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+    const tx = mx + nx * labelOffset;
+    const ty = my + ny * labelOffset;
+
+    const t = document.createElementNS(SVG_NS, 'text');
+    t.setAttribute('x', tx);
+    t.setAttribute('y', ty);
+    t.setAttribute('font-size', fontSize);
+    t.setAttribute('font-family', 'monospace');
+    t.setAttribute('font-weight', '600');
+    t.setAttribute('fill', color);
+    t.setAttribute('stroke', '#000');
+    t.setAttribute('stroke-width', fontSize * 0.25);
+    t.setAttribute('stroke-linejoin', 'round');
+    t.setAttribute('paint-order', 'stroke');
+    t.setAttribute('text-anchor', 'middle');
+    t.setAttribute('dominant-baseline', 'middle');
+    // Counter-rotate so text stays upright regardless of world rotation.
+    if (state.rotation) {
+      t.setAttribute('transform', `rotate(${-state.rotation}, ${tx}, ${ty})`);
+    }
+    t.textContent = text;
+    svg.appendChild(t);
+  }
+
+  function renderMeasurements() {
+    measurementsList.innerHTML = '';
+    if (!state.lines.length) {
+      const hint = document.createElement('div');
+      hint.id = 'empty-hint';
+      if (!state.imageDataUrl) {
+        hint.textContent = 'Upload a floor plan image to begin.';
+      } else if (!state.pixelsPerMeter) {
+        hint.textContent = 'Click two points on the image to draw the first line. You will then be asked for its real-world length to set the scale.';
+      } else {
+        hint.textContent = 'Click two points to add another measurement.';
+      }
+      measurementsList.appendChild(hint);
+      return;
+    }
+    for (const line of state.lines) {
+      const isCal = line.id === state.calibrationLineId;
+      const isSel = line.id === selectedLineId;
+      const lengthM = computeLengthMeters(line);
+      const row = document.createElement('div');
+      row.className = 'measurement'
+        + (isCal ? ' calibration' : '')
+        + (isSel ? ' selected' : '');
+      row.title = 'Click to select (arrow keys to nudge, Shift+arrows for 10×)';
+      row.addEventListener('click', () => {
+        selectedLineId = (selectedLineId === line.id) ? null : line.id;
+        render();
+      });
+
+      const left = document.createElement('div');
+      const label = document.createElement('div');
+      label.className = 'label';
+      if (lengthM == null) {
+        label.textContent = 'no scale';
+      } else {
+        const input = document.createElement('input');
+        input.className = 'length-input';
+        input.type = 'text';
+        input.value = formatLength(lengthM);
+        input.spellcheck = false;
+        input.title = 'Edit length — e.g. 2.5 (m), 250cm, 2500mm';
+        input.addEventListener('click', e => { e.stopPropagation(); input.select(); });
+        input.addEventListener('keydown', e => {
+          if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+          else if (e.key === 'Escape') { input.value = formatLength(lengthM); input.blur(); }
+        });
+        input.addEventListener('change', () => {
+          const v = parseLengthInput(input.value);
+          if (v > 0 && Math.abs(v - lengthM) > 1e-6) {
+            setLineLengthMeters(line, v);
+          } else {
+            input.value = formatLength(lengthM);
+          }
+        });
+        label.appendChild(input);
+      }
+      left.appendChild(label);
+      if (isCal) {
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        meta.textContent = 'scale reference';
+        left.appendChild(meta);
+      }
+      row.appendChild(left);
+
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const stop = e => e.stopPropagation();
+      if (isCal) {
+        const edit = document.createElement('button');
+        edit.textContent = 'Edit';
+        edit.addEventListener('click', e => { stop(e); editCalibration(line); });
+        actions.appendChild(edit);
+      }
+      if (isSel) {
+        const horiz = document.createElement('button');
+        horiz.textContent = '↔';
+        horiz.title = 'Make line perfectly horizontal';
+        horiz.addEventListener('click', e => { stop(e); alignLineToScreenAxis(line, false); });
+        actions.appendChild(horiz);
+        const vert = document.createElement('button');
+        vert.textContent = '↕';
+        vert.title = 'Make line perfectly vertical';
+        vert.addEventListener('click', e => { stop(e); alignLineToScreenAxis(line, true); });
+        actions.appendChild(vert);
+      }
+      const del = document.createElement('button');
+      del.className = 'del';
+      del.textContent = '×';
+      del.title = 'Remove this measurement';
+      del.addEventListener('click', e => { stop(e); removeLine(line.id); });
+      actions.appendChild(del);
+      row.appendChild(actions);
+
+      measurementsList.appendChild(row);
+    }
+  }
+
+  // ---------- measurement math ----------
+  function computeLengthMeters(line) {
+    if (!state.pixelsPerMeter) return null;
+    const dx = line.x2 - line.x1;
+    const dy = line.y2 - line.y1;
+    return Math.sqrt(dx * dx + dy * dy) / state.pixelsPerMeter;
+  }
+
+  function formatLength(m) {
+    if (m < 0.01) return (m * 1000).toFixed(1) + ' mm';
+    if (m < 1) return (m * 100).toFixed(1) + ' cm';
+    return m.toFixed(2) + ' m';
+  }
+
+  function formatArea(m2) {
+    if (m2 < 0.01) return (m2 * 10000).toFixed(1) + ' cm²';
+    return m2.toFixed(2) + ' m²';
+  }
+
+  // Detect closed polygons formed by lines whose endpoints meet (within tolerance).
+  // Returns [{ cx, cy, areaM2 }] — one per interior face, position is the polygon
+  // area-weighted centroid in image-pixel coords.
+  //
+  // Algorithm: cluster endpoints into vertices (union-find by proximity), then walk
+  // the planar graph's half-edges. At each vertex, outgoing edges are sorted by polar
+  // angle; from a half-edge u→v, the next face edge is the one immediately CW from the
+  // reverse (v→u) in v's adjacency. Interior faces trace CCW visually on screen and
+  // produce positive shoelace area in screen (Y-down) coords; the outer face of each
+  // connected component traces the opposite way and is dropped.
+  function findLoopAreas() {
+    if (!state.pixelsPerMeter || state.lines.length < 3) return [];
+
+    const TOL = 4;
+    const TOL2 = TOL * TOL;
+
+    const pts = [];
+    for (const ln of state.lines) {
+      pts.push({ x: ln.x1, y: ln.y1 });
+      pts.push({ x: ln.x2, y: ln.y2 });
+    }
+
+    const parent = pts.map((_, i) => i);
+    function find(i) {
+      while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+      return i;
+    }
+    for (let i = 0; i < pts.length; i++) {
+      for (let j = i + 1; j < pts.length; j++) {
+        const dx = pts[i].x - pts[j].x;
+        const dy = pts[i].y - pts[j].y;
+        if (dx * dx + dy * dy <= TOL2) parent[find(i)] = find(j);
+      }
+    }
+
+    const rootToVertex = new Map();
+    const vertices = [];
+    const vCount = [];
+    for (let i = 0; i < pts.length; i++) {
+      const r = find(i);
+      let vi = rootToVertex.get(r);
+      if (vi === undefined) {
+        vi = vertices.length;
+        rootToVertex.set(r, vi);
+        vertices.push({ x: 0, y: 0 });
+        vCount.push(0);
+      }
+      vertices[vi].x += pts[i].x;
+      vertices[vi].y += pts[i].y;
+      vCount[vi]++;
+    }
+    for (let i = 0; i < vertices.length; i++) {
+      vertices[i].x /= vCount[i];
+      vertices[i].y /= vCount[i];
+    }
+
+    const adj = vertices.map(() => []);
+    for (let i = 0; i < state.lines.length; i++) {
+      const v1 = rootToVertex.get(find(i * 2));
+      const v2 = rootToVertex.get(find(i * 2 + 1));
+      if (v1 === v2) continue;
+      const line = state.lines[i];
+      const a = vertices[v1], b = vertices[v2];
+      adj[v1].push({
+        to: v2, edgeIdx: i,
+        fromPt: { x: line.x1, y: line.y1 },
+        toPt: { x: line.x2, y: line.y2 },
+        angle: Math.atan2(b.y - a.y, b.x - a.x),
+      });
+      adj[v2].push({
+        to: v1, edgeIdx: i,
+        fromPt: { x: line.x2, y: line.y2 },
+        toPt: { x: line.x1, y: line.y1 },
+        angle: Math.atan2(a.y - b.y, a.x - b.x),
+      });
+    }
+    for (const list of adj) list.sort((p, q) => p.angle - q.angle);
+
+    const visited = new Set();
+    const faces = [];
+    for (let u = 0; u < vertices.length; u++) {
+      for (const out of adj[u]) {
+        if (visited.has(u + '|' + out.edgeIdx)) continue;
+        const faceEdges = [];
+        let cu = u, co = out;
+        for (let safety = 0; safety < 10000; safety++) {
+          const k = cu + '|' + co.edgeIdx;
+          if (visited.has(k)) break;
+          visited.add(k);
+          faceEdges.push(co);
+          const v = co.to;
+          const adjV = adj[v];
+          const revIdx = adjV.findIndex(e => e.edgeIdx === co.edgeIdx);
+          if (revIdx === -1) break;
+          cu = v;
+          co = adjV[(revIdx - 1 + adjV.length) % adjV.length];
+        }
+        if (faceEdges.length >= 3) {
+          // Topology uses clustered endpoints; geometry uses only this face's edges
+          // so dangling lines near a corner cannot distort the polygon area.
+          faces.push(faceEdges.map((edge, i) => {
+            const prev = faceEdges[(i - 1 + faceEdges.length) % faceEdges.length];
+            return {
+              x: (prev.toPt.x + edge.fromPt.x) / 2,
+              y: (prev.toPt.y + edge.fromPt.y) / 2,
+            };
+          }));
+        }
+      }
+    }
+
+    const ppm2 = state.pixelsPerMeter * state.pixelsPerMeter;
+    const out = [];
+    for (const face of faces) {
+      let a = 0, cx = 0, cy = 0;
+      for (let i = 0; i < face.length; i++) {
+        const p = face[i];
+        const q = face[(i + 1) % face.length];
+        const cross = p.x * q.y - q.x * p.y;
+        a += cross;
+        cx += (p.x + q.x) * cross;
+        cy += (p.y + q.y) * cross;
+      }
+      a /= 2;
+      // Positive = interior face in screen (Y-down) coords. Outer face has negative
+      // signed area; tree-only / degenerate faces have ~0.
+      if (a <= 1) continue;
+      const f = 1 / (6 * a);
+      out.push({ cx: cx * f, cy: cy * f, areaM2: a / ppm2 });
+    }
+    return out;
+  }
+
+  // Accepts "1.5", "1.5m", "150cm", "1500mm" (commas allowed). Unitless = meters,
+  // matching the calibration prompt.
+  function parseLengthInput(str) {
+    if (str == null) return NaN;
+    const s = String(str).trim().toLowerCase().replace(/,/g, '.');
+    const m = s.match(/^([+-]?\d*\.?\d+)\s*(mm|cm|m)?$/);
+    if (!m) return NaN;
+    const v = parseFloat(m[1]);
+    if (!isFinite(v)) return NaN;
+    if (m[2] === 'mm') return v / 1000;
+    if (m[2] === 'cm') return v / 100;
+    return v;
+  }
+
+  // Resize a line from its midpoint to the requested real-world length, keeping
+  // its direction. pixelsPerMeter (the scale) is untouched — this is deliberately
+  // distinct from calibration. For the calibration line we also update its stored
+  // realLength so the calibration stays internally consistent.
+  function setLineLengthMeters(line, meters) {
+    if (!state.pixelsPerMeter || !(meters > 0)) return;
+    const dx = line.x2 - line.x1;
+    const dy = line.y2 - line.y1;
+    const L = Math.hypot(dx, dy);
+    if (L < 0.5) return;
+    const targetPx = meters * state.pixelsPerMeter;
+    if (Math.abs(targetPx - L) < 0.001) return;
+    const cx = (line.x1 + line.x2) / 2;
+    const cy = (line.y1 + line.y2) / 2;
+    const half = targetPx / 2;
+    const ux = dx / L;
+    const uy = dy / L;
+    commit();
+    line.x1 = cx - ux * half;
+    line.y1 = cy - uy * half;
+    line.x2 = cx + ux * half;
+    line.y2 = cy + uy * half;
+    if (line.id === state.calibrationLineId) line.realLength = meters;
+    save();
+    render();
+  }
+
+  function setCalibration(line, realLengthMeters) {
+    const dx = line.x2 - line.x1;
+    const dy = line.y2 - line.y1;
+    const px = Math.sqrt(dx * dx + dy * dy);
+    if (!px || !realLengthMeters) return;
+    state.pixelsPerMeter = px / realLengthMeters;
+    state.calibrationLineId = line.id;
+    line.realLength = realLengthMeters;
+  }
+
+  function editCalibration(line) {
+    showModal({
+      title: 'Edit scale reference',
+      message: 'Real-world length of the highlighted line, in meters.',
+      defaultValue: line.realLength != null ? line.realLength : '',
+      onOk: value => {
+        if (!(value > 0)) return;
+        commit();
+        setCalibration(line, value);
+        save();
+        render();
+      },
+    });
+  }
+
+  function removeLine(id) {
+    if (!state.lines.some(l => l.id === id)) return;
+    commit();
+    state.lines = state.lines.filter(l => l.id !== id);
+    if (state.calibrationLineId === id) {
+      state.calibrationLineId = null;
+      state.pixelsPerMeter = null;
+    }
+    if (selectedLineId === id) selectedLineId = null;
+    save();
+    render();
+  }
+
+  // ---------- hit-testing ----------
+  const HANDLE_HIT_SCREEN = 10;
+  const LINE_HIT_SCREEN = 6;
+
+  function distToSegment(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return Math.hypot(px - ax, py - ay);
+    let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  }
+
+  // Returns {line, endpoint} where endpoint is 1, 2, or 0 (whole line).
+  function hitTest(imgX, imgY) {
+    const handleR = HANDLE_HIT_SCREEN / state.zoom;
+    // Endpoints get priority. Iterate top-most first.
+    for (let i = state.lines.length - 1; i >= 0; i--) {
+      const line = state.lines[i];
+      if (Math.hypot(imgX - line.x1, imgY - line.y1) <= handleR) return { line, endpoint: 1 };
+      if (Math.hypot(imgX - line.x2, imgY - line.y2) <= handleR) return { line, endpoint: 2 };
+    }
+    const lineR = LINE_HIT_SCREEN / state.zoom;
+    for (let i = state.lines.length - 1; i >= 0; i--) {
+      const line = state.lines[i];
+      if (distToSegment(imgX, imgY, line.x1, line.y1, line.x2, line.y2) <= lineR) {
+        return { line, endpoint: 0 };
+      }
+    }
+    return null;
+  }
+
+  // Rotate the line about its midpoint so it aligns with the screen's vertical
+  // (or horizontal) axis. Length is preserved; image-space direction is derived
+  // from world rotation so the button matches what the user sees.
+  function alignLineToScreenAxis(line, screenVertical) {
+    const cx = (line.x1 + line.x2) / 2;
+    const cy = (line.y1 + line.y2) / 2;
+    const L = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
+    if (L < 0.5) return;
+    const θ = -normRotation() * Math.PI / 180;
+    const c = Math.cos(θ), s = Math.sin(θ);
+    const sdx = screenVertical ? 0 : 1;
+    const sdy = screenVertical ? 1 : 0;
+    const idx = sdx * c - sdy * s;
+    const idy = sdx * s + sdy * c;
+    commit();
+    const hx = idx * L / 2;
+    const hy = idy * L / 2;
+    line.x1 = cx - hx; line.y1 = cy - hy;
+    line.x2 = cx + hx; line.y2 = cy + hy;
+    save();
+    render();
+  }
+
+  // If the calibration line is reshaped, keep its declared real length and
+  // update px/m. Translating the whole line leaves px/m unchanged.
+  function recomputeCalibrationIfNeeded(line) {
+    if (line.id !== state.calibrationLineId || !line.realLength) return;
+    const px = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
+    if (px > 0.5) state.pixelsPerMeter = px / line.realLength;
+  }
+
+  function updateHoverCursor() {
+    if (panModeToggle || drawingLine || !state.imageDataUrl || !mouseWorld) {
+      container.style.cursor = '';
+      return;
+    }
+    const hit = hitTest(mouseWorld.x, mouseWorld.y);
+    container.style.cursor = hit ? (hit.endpoint === 0 ? 'move' : 'grab') : '';
+  }
+
+  // ---------- mouse interaction ----------
+  container.addEventListener('contextmenu', e => e.preventDefault());
+
+  container.addEventListener('mousedown', e => {
+    if (!state.imageDataUrl) return;
+    if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
+    e.preventDefault();
+    const isPan = e.button === 1 || e.button === 2 || (e.button === 0 && (panModeToggle || e.shiftKey));
+
+    if (isPan) {
+      drag = {
+        type: 'pan',
+        x: e.clientX, y: e.clientY,
+        startPanX: state.panX, startPanY: state.panY,
+        moved: false,
+      };
+      container.classList.add('grabbing');
+      return;
+    }
+
+    // While drawing, mousedown is just part of the click that places the next point.
+    if (!drawingLine) {
+      const pt = screenToWorld(e.clientX, e.clientY);
+      const hit = hitTest(pt.x, pt.y);
+      if (hit) {
+        drag = {
+          type: hit.endpoint === 0 ? 'move-line' : 'move-handle',
+          x: e.clientX, y: e.clientY,
+          line: hit.line,
+          endpoint: hit.endpoint,
+          startImg: pt,
+          orig: { x1: hit.line.x1, y1: hit.line.y1, x2: hit.line.x2, y2: hit.line.y2 },
+          moved: false,
+        };
+        if (selectedLineId !== hit.line.id) {
+          selectedLineId = hit.line.id;
+          render();
+        }
+        container.classList.add('grabbing');
+        return;
+      }
+    }
+
+    drag = { type: 'click', x: e.clientX, y: e.clientY, moved: false };
+  });
+
+  window.addEventListener('mousemove', e => {
+    if (state.imageDataUrl) {
+      mouseWorld = screenToWorld(e.clientX, e.clientY);
+    }
+    if (drag) {
+      const sdx = e.clientX - drag.x;
+      const sdy = e.clientY - drag.y;
+      if (!drag.moved && (sdx * sdx + sdy * sdy) > 9) drag.moved = true;
+
+      if (drag.type === 'pan') {
+        state.panX = drag.startPanX + sdx;
+        state.panY = drag.startPanY + sdy;
+        applyTransform();
+      } else if (drag.moved && (drag.type === 'move-handle' || drag.type === 'move-line')) {
+        if (!drag.committed) {
+          commit();
+          drag.committed = true;
+        }
+        const ddx = mouseWorld.x - drag.startImg.x;
+        const ddy = mouseWorld.y - drag.startImg.y;
+        if (drag.type === 'move-handle') {
+          if (drag.endpoint === 1) {
+            drag.line.x1 = drag.orig.x1 + ddx;
+            drag.line.y1 = drag.orig.y1 + ddy;
+          } else {
+            drag.line.x2 = drag.orig.x2 + ddx;
+            drag.line.y2 = drag.orig.y2 + ddy;
+          }
+          recomputeCalibrationIfNeeded(drag.line);
+        } else {
+          drag.line.x1 = drag.orig.x1 + ddx;
+          drag.line.y1 = drag.orig.y1 + ddy;
+          drag.line.x2 = drag.orig.x2 + ddx;
+          drag.line.y2 = drag.orig.y2 + ddy;
+        }
+        render();
+      }
+    } else {
+      updateHoverCursor();
+    }
+    if (drawingLine) render();
+  });
+
+  window.addEventListener('mouseup', e => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    container.classList.remove('grabbing');
+
+    if (d.type === 'pan') {
+      if (d.moved) save();
+      return;
+    }
+    if (d.type === 'move-handle' || d.type === 'move-line') {
+      if (d.moved) { save(); render(); }
+      updateHoverCursor();
+      return;
+    }
+    if (d.type === 'click') {
+      if (d.moved) return;
+      if (!container.contains(e.target)) return;
+      handleDrawClick(e);
+    }
+  });
+
+  function handleDrawClick(e) {
+    if (!state.imageDataUrl) return;
+    const pt = screenToWorld(e.clientX, e.clientY);
+    if (!drawingLine) {
+      drawingLine = { x1: pt.x, y1: pt.y };
+      render();
+      return;
+    }
+    const line = {
+      id: nextLineId++,
+      x1: drawingLine.x1, y1: drawingLine.y1,
+      x2: pt.x, y2: pt.y,
+    };
+    if (Math.hypot(line.x2 - line.x1, line.y2 - line.y1) < 0.5) {
+      drawingLine = null;
+      render();
+      return;
+    }
+    commit();
+    state.lines.push(line);
+    drawingLine = null;
+
+    if (!state.pixelsPerMeter) {
+      showModal({
+        title: 'Set scale',
+        message: 'Real-world length of this line, in meters. This will calibrate every other measurement.',
+        defaultValue: '',
+        onOk: value => {
+          if (value > 0) setCalibration(line, value);
+          save();
+          render();
+        },
+        onCancel: () => {
+          save();
+          render();
+        },
+      });
+    } else {
+      save();
+      render();
+    }
+  }
+
+  // ---------- zoom ----------
+  container.addEventListener('wheel', e => {
+    if (!state.imageDataUrl) return;
+    e.preventDefault();
+    const rect = container.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    zoomBy(factor, cx, cy);
+  }, { passive: false });
+
+  function zoomBy(factor, cx, cy) {
+    const newZoom = Math.max(0.05, Math.min(40, state.zoom * factor));
+    const f = newZoom / state.zoom;
+    state.panX = cx - (cx - state.panX) * f;
+    state.panY = cy - (cy - state.panY) * f;
+    state.zoom = newZoom;
+    applyTransform();
+    render();
+    save();
+  }
+
+  function zoomToCenter(factor) {
+    const rect = container.getBoundingClientRect();
+    zoomBy(factor, rect.width / 2, rect.height / 2);
+  }
+
+  function fitToView() {
+    if (!state.imageW) return;
+    const rect = container.getBoundingClientRect();
+    const margin = 20;
+    const [bw, bh] = rotatedBBox();
+    const sx = (rect.width - margin * 2) / bw;
+    const sy = (rect.height - margin * 2) / bh;
+    state.zoom = Math.max(0.05, Math.min(sx, sy));
+    state.panX = (rect.width - bw * state.zoom) / 2;
+    state.panY = (rect.height - bh * state.zoom) / 2;
+    applyTransform();
+    render();
+    save();
+  }
+
+  function actualSize() {
+    if (!state.imageW) return;
+    const rect = container.getBoundingClientRect();
+    const [bw, bh] = rotatedBBox();
+    state.zoom = 1;
+    state.panX = (rect.width - bw) / 2;
+    state.panY = (rect.height - bh) / 2;
+    applyTransform();
+    render();
+    save();
+  }
+
+  // ---------- rotation ----------
+  function rotate90() {
+    if (!state.imageW) return;
+    const rect = container.getBoundingClientRect();
+    // Image-pixel point currently under the screen center.
+    const centerImg = screenToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    state.rotation = (normRotation() + 90) % 360;
+    // Put that same image point back at the screen center after rotation.
+    const w = imageToWorld(centerImg.x, centerImg.y);
+    state.panX = rect.width / 2 - state.zoom * w.x;
+    state.panY = rect.height / 2 - state.zoom * w.y;
+    applyTransform();
+    render();
+    save();
+  }
+
+  // ---------- export ----------
+  function exportPNG() {
+    if (!state.imageDataUrl || !state.imageW) {
+      alert('Upload an image first.');
+      return;
+    }
+    const [bw, bh] = rotatedBBox();
+    const canvas = document.createElement('canvas');
+    canvas.width = bw;
+    canvas.height = bh;
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, bw, bh);
+
+    const [tx, ty] = rotationOffset();
+    const θrad = normRotation() * Math.PI / 180;
+
+    // Draw the rotated image.
+    ctx.save();
+    ctx.translate(tx, ty);
+    ctx.rotate(θrad);
+    ctx.drawImage(img, 0, 0);
+    ctx.restore();
+
+    // Sizing scaled to image so it looks right on any resolution.
+    const diag = Math.hypot(state.imageW, state.imageH);
+    const base = Math.max(2, diag / 800);
+    const strokeW = base;
+    const handleR = base * 1.6;
+    const fontSize = Math.max(14, base * 7);
+    const labelOffset = fontSize * 0.7;
+
+    for (const line of state.lines) {
+      const isCal = line.id === state.calibrationLineId;
+      const color = isCal ? '#1f8c2f' : '#1565d8';
+      drawLineCanvas(ctx, line, color, strokeW, handleR, fontSize, labelOffset, tx, ty, θrad);
+    }
+
+    const areaFontSize = Math.max(16, base * 8);
+    for (const a of findLoopAreas()) {
+      drawAreaLabelCanvas(ctx, a, areaFontSize, tx, ty, θrad);
+    }
+
+    canvas.toBlob(blob => {
+      if (!blob) { alert('Export failed.'); return; }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'floorplan-measurements.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, 'image/png');
+  }
+
+  function drawAreaLabelCanvas(ctx, label, fontSize, tx, ty, θrad) {
+    const c = Math.cos(θrad), s = Math.sin(θrad);
+    const cx = tx + (label.cx * c - label.cy * s);
+    const cy = ty + (label.cx * s + label.cy * c);
+    const text = formatArea(label.areaM2);
+    ctx.font = `600 ${fontSize}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = fontSize * 0.35;
+    ctx.lineJoin = 'round';
+    ctx.miterLimit = 2;
+    ctx.strokeStyle = '#fff';
+    ctx.strokeText(text, cx, cy);
+    ctx.fillStyle = '#a87800';
+    ctx.fillText(text, cx, cy);
+  }
+
+  function drawLineCanvas(ctx, line, color, strokeW, handleR, fontSize, labelOffset, tx, ty, θrad) {
+    // Line and handles rotate with the image.
+    ctx.save();
+    ctx.translate(tx, ty);
+    ctx.rotate(θrad);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = strokeW;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(line.x1, line.y1);
+    ctx.lineTo(line.x2, line.y2);
+    ctx.stroke();
+    for (const [x, y] of [[line.x1, line.y1], [line.x2, line.y2]]) {
+      ctx.beginPath();
+      ctx.arc(x, y, handleR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    const lengthM = computeLengthMeters(line);
+    if (lengthM == null) return;
+    const text = formatLength(lengthM);
+
+    // Label position in image-pixel coords (next to the line midpoint).
+    const mx = (line.x1 + line.x2) / 2;
+    const my = (line.y1 + line.y2) / 2;
+    const dx = line.x2 - line.x1;
+    const dy = line.y2 - line.y1;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+    const lx = mx + nx * labelOffset;
+    const ly = my + ny * labelOffset;
+
+    // Project to canvas coords through the rotation so the label sits in the right spot,
+    // but draw the text horizontally (no rotation) so it stays readable.
+    const c = Math.cos(θrad), s = Math.sin(θrad);
+    const cx = tx + (lx * c - ly * s);
+    const cy = ty + (lx * s + ly * c);
+
+    ctx.font = `600 ${fontSize}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = fontSize * 0.3;
+    ctx.strokeStyle = '#fff';
+    ctx.lineJoin = 'round';
+    ctx.miterLimit = 2;
+    ctx.strokeText(text, cx, cy);
+    ctx.fillStyle = color;
+    ctx.fillText(text, cx, cy);
+  }
+
+  // ---------- buttons ----------
+  document.getElementById('zoom-in-btn').addEventListener('click', () => zoomToCenter(1.25));
+  document.getElementById('zoom-out-btn').addEventListener('click', () => zoomToCenter(1 / 1.25));
+  document.getElementById('zoom-fit-btn').addEventListener('click', fitToView);
+  document.getElementById('zoom-100-btn').addEventListener('click', actualSize);
+  document.getElementById('rotate-btn').addEventListener('click', rotate90);
+  document.getElementById('export-btn').addEventListener('click', exportPNG);
+  undoBtn.addEventListener('click', undo);
+  redoBtn.addEventListener('click', redo);
+  document.getElementById('save-project-btn').addEventListener('click', saveProject);
+  projectInput.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (file) loadProject(file);
+    projectInput.value = '';
+  });
+
+  const projectMenuBtn = document.getElementById('project-menu-btn');
+  const projectMenu = document.getElementById('project-menu');
+  function setProjectMenuOpen(open) {
+    projectMenu.hidden = !open;
+    projectMenuBtn.classList.toggle('active', open);
+  }
+  projectMenuBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    setProjectMenuOpen(projectMenu.hidden);
+  });
+  projectMenu.addEventListener('click', () => setProjectMenuOpen(false));
+  document.addEventListener('click', e => {
+    if (!projectMenuBtn.contains(e.target) && !projectMenu.contains(e.target)) {
+      setProjectMenuOpen(false);
+    }
+  });
+
+  panBtn.addEventListener('click', () => {
+    panModeToggle = !panModeToggle;
+    panBtn.classList.toggle('active', panModeToggle);
+    container.classList.toggle('pan-mode', panModeToggle);
+  });
+
+  document.getElementById('calibrate-btn').addEventListener('click', () => {
+    if (!state.calibrationLineId) {
+      const line = state.lines[0];
+      if (!line) {
+        alert('Draw a line on the image first. You will be prompted for its length.');
+        return;
+      }
+      showModal({
+        title: 'Set scale',
+        message: 'Real-world length of the first line, in meters.',
+        defaultValue: '',
+        onOk: value => {
+          if (value > 0) {
+            commit();
+            setCalibration(line, value);
+            save();
+            render();
+          }
+        },
+      });
+      return;
+    }
+    const line = state.lines.find(l => l.id === state.calibrationLineId);
+    editCalibration(line);
+  });
+
+  document.getElementById('clear-lines-btn').addEventListener('click', () => {
+    if (!state.lines.length) return;
+    if (!confirm('Remove all measurements (including the scale reference)?')) return;
+    commit();
+    state.lines = [];
+    state.calibrationLineId = null;
+    state.pixelsPerMeter = null;
+    drawingLine = null;
+    selectedLineId = null;
+    save();
+    render();
+  });
+
+  document.getElementById('reset-btn').addEventListener('click', () => {
+    if (!confirm('Remove the image and all measurements?')) return;
+    state = defaultState();
+    nextLineId = 1;
+    drawingLine = null;
+    selectedLineId = null;
+    clearHistory();
+    img.src = '';
+    img.style.display = 'none';
+    dropHint.style.display = '';
+    localStorage.removeItem(STORAGE_KEY);
+    applyTransform();
+    render();
+  });
+
+  // ---------- keyboard ----------
+  const ARROW_DIRS = {
+    ArrowUp: [0, -1], ArrowDown: [0, 1],
+    ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+  };
+
+  function nudgeSelected(sdx, sdy) {
+    const line = state.lines.find(l => l.id === selectedLineId);
+    if (!line) return;
+    commit('nudge:' + line.id);
+    // Screen-space delta → image-space delta (undo the rotation).
+    const θ = -normRotation() * Math.PI / 180;
+    const c = Math.cos(θ), s = Math.sin(θ);
+    const dx = sdx * c - sdy * s;
+    const dy = sdx * s + sdy * c;
+    line.x1 += dx; line.y1 += dy;
+    line.x2 += dx; line.y2 += dy;
+    save();
+    render();
+  }
+
+  window.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT') return;
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && (e.key === 'z' || e.key === 'Z')) {
+      e.preventDefault();
+      if (e.shiftKey) redo(); else undo();
+      return;
+    }
+    if (mod && (e.key === 'y' || e.key === 'Y')) {
+      e.preventDefault();
+      redo();
+      return;
+    }
+    if (ARROW_DIRS[e.key] && selectedLineId != null) {
+      e.preventDefault();
+      const [dx, dy] = ARROW_DIRS[e.key];
+      const step = e.shiftKey ? 10 : 1;
+      nudgeSelected(dx * step, dy * step);
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (drawingLine) { drawingLine = null; render(); }
+      else if (selectedLineId != null) { selectedLineId = null; render(); }
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedLineId != null) {
+      e.preventDefault();
+      removeLine(selectedLineId);
+    } else if (e.key === 'f' || e.key === 'F') {
+      fitToView();
+    } else if (e.key === 'r' || e.key === 'R') {
+      rotate90();
+    } else if (e.key === 'e' || e.key === 'E') {
+      exportPNG();
+    } else if (e.key === '+' || e.key === '=') {
+      zoomToCenter(1.25);
+    } else if (e.key === '-' || e.key === '_') {
+      zoomToCenter(1 / 1.25);
+    }
+  });
+
+  // ---------- status ----------
+  function updateStatus() {
+    const parts = [];
+    if (state.imageW) parts.push(`${state.imageW}×${state.imageH}px`);
+    if (state.pixelsPerMeter) parts.push(`${state.pixelsPerMeter.toFixed(1)} px/m`);
+    parts.push(`zoom ${(state.zoom * 100).toFixed(0)}%`);
+    if (normRotation()) parts.push(`rot ${normRotation()}°`);
+    parts.push(`${state.lines.length} line${state.lines.length === 1 ? '' : 's'}`);
+    statusEl.textContent = parts.join(' • ') || 'No image loaded';
+  }
+
+  // ---------- modal ----------
+  function showModal({ title, message, defaultValue, onOk, onCancel }) {
+    const bg = document.createElement('div');
+    bg.className = 'modal-bg';
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    const h = document.createElement('h3'); h.textContent = title; modal.appendChild(h);
+    if (message) {
+      const p = document.createElement('p'); p.textContent = message; modal.appendChild(p);
+    }
+    const input = document.createElement('input');
+    input.type = 'number'; input.step = 'any'; input.min = '0';
+    input.placeholder = 'e.g. 2.5';
+    if (defaultValue !== '' && defaultValue != null) input.value = defaultValue;
+    modal.appendChild(input);
+    const actions = document.createElement('div'); actions.className = 'actions';
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancel';
+    const ok = document.createElement('button'); ok.textContent = 'OK'; ok.className = 'primary';
+    actions.appendChild(cancel); actions.appendChild(ok);
+    modal.appendChild(actions);
+    bg.appendChild(modal); document.body.appendChild(bg);
+    setTimeout(() => { input.focus(); input.select(); }, 0);
+
+    function close(val) {
+      bg.remove();
+      if (val == null) { onCancel && onCancel(); }
+      else { onOk && onOk(val); }
+    }
+    cancel.addEventListener('click', () => close(null));
+    ok.addEventListener('click', () => close(parseFloat(input.value)));
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') close(parseFloat(input.value));
+      else if (e.key === 'Escape') close(null);
+    });
+    bg.addEventListener('click', e => { if (e.target === bg) close(null); });
+  }
+
+  // ---------- boot ----------
+  load();
+  if (!state.imageDataUrl) {
+    applyTransform();
+    render();
+  }
+  window.addEventListener('resize', () => {
+    updateStatus();
+  });
+})();
+</script>
+</body>
+</html>
