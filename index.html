@@ -47,13 +47,26 @@
   #toolbar .dropdown-menu button:hover,
   #toolbar .dropdown-menu label.menu-item:hover { background: #4a4a4a; }
   #toolbar .info { font-size: 12px; color: #aaa; margin-left: auto; font-family: monospace; }
-  #toolbar .opacity-control {
-    display: inline-flex; align-items: center; gap: 6px;
-    font-size: 12px; color: #aaa;
+  #toolbar .dropdown-menu .opacity-control,
+  #toolbar .dropdown-menu .menu-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; color: #aaa; font-size: 12px;
   }
-  #toolbar .opacity-control input[type=range] {
-    width: 90px; accent-color: #4a8acc; cursor: pointer;
+  #toolbar .dropdown-menu .opacity-control > span,
+  #toolbar .dropdown-menu .menu-row > span { min-width: 52px; }
+  #toolbar .dropdown-menu .opacity-control input[type=range] {
+    flex: 1; min-width: 120px; accent-color: #4a8acc; cursor: pointer;
   }
+  #toolbar .dropdown-menu .menu-row-buttons {
+    display: flex; gap: 4px; margin-left: auto;
+  }
+  #toolbar .dropdown-menu .menu-row-buttons button {
+    background: #3a3a3a; color: #eee;
+    border: 1px solid #555; padding: 4px 8px;
+    border-radius: 3px; cursor: pointer; font-size: 12px;
+    line-height: 1; min-width: 36px; text-align: center;
+  }
+  #toolbar .dropdown-menu .menu-row-buttons button:hover { background: #4a4a4a; }
   #main { flex: 1; display: flex; overflow: hidden; min-height: 0; }
   #canvas-container {
     flex: 1; position: relative; overflow: hidden;
@@ -156,16 +169,25 @@
   <span class="sep"></span>
   <button id="calibrate-btn" title="Edit the scale-reference length">Set scale…</button>
   <button id="pan-btn" title="Toggle pan mode (or hold Shift / middle-click)">Pan</button>
-  <button id="rotate-btn" title="Rotate image and measurements 90° clockwise (R)">Rotate 90°</button>
-  <label class="opacity-control" title="Background image opacity">
-    <span>Opacity</span>
-    <input type="range" id="opacity-input" min="0" max="100" value="100">
-  </label>
-  <span class="sep"></span>
-  <button id="zoom-out-btn" title="Zoom out">−</button>
-  <button id="zoom-in-btn" title="Zoom in">+</button>
-  <button id="zoom-fit-btn" title="Fit image to view">Fit</button>
-  <button id="zoom-100-btn" title="Actual size">1:1</button>
+  <div class="dropdown">
+    <button id="image-menu-btn" type="button" title="Image controls (rotate, opacity, zoom)">Image ▾</button>
+    <div class="dropdown-menu" id="image-menu" hidden>
+      <button id="rotate-btn" title="Rotate image and measurements 90° clockwise (R)">Rotate 90°</button>
+      <label class="opacity-control" title="Background image opacity">
+        <span>Opacity</span>
+        <input type="range" id="opacity-input" min="0" max="100" value="100">
+      </label>
+      <div class="menu-row" title="Zoom controls">
+        <span>Zoom</span>
+        <div class="menu-row-buttons">
+          <button id="zoom-out-btn" title="Zoom out">−</button>
+          <button id="zoom-in-btn" title="Zoom in">+</button>
+          <button id="zoom-fit-btn" title="Fit image to view">Fit</button>
+          <button id="zoom-100-btn" title="Actual size">1:1</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <span class="sep"></span>
   <button id="clear-lines-btn" title="Remove all measurements">Clear lines</button>
   <button id="reset-btn" title="Remove image and all measurements">Reset all</button>
@@ -1448,20 +1470,32 @@
     projectInput.value = '';
   });
 
-  const projectMenuBtn = document.getElementById('project-menu-btn');
-  const projectMenu = document.getElementById('project-menu');
-  function setProjectMenuOpen(open) {
-    projectMenu.hidden = !open;
-    projectMenuBtn.classList.toggle('active', open);
+  const dropdowns = [
+    { btn: document.getElementById('project-menu-btn'), menu: document.getElementById('project-menu'), closeOnInnerClick: true },
+    { btn: document.getElementById('image-menu-btn'), menu: document.getElementById('image-menu'), closeOnInnerClick: false },
+  ];
+  function setDropdownOpen(target, open) {
+    for (const d of dropdowns) {
+      const active = d === target && open;
+      d.menu.hidden = !active;
+      d.btn.classList.toggle('active', active);
+    }
   }
-  projectMenuBtn.addEventListener('click', e => {
-    e.stopPropagation();
-    setProjectMenuOpen(projectMenu.hidden);
-  });
-  projectMenu.addEventListener('click', () => setProjectMenuOpen(false));
+  for (const d of dropdowns) {
+    d.btn.addEventListener('click', e => {
+      e.stopPropagation();
+      setDropdownOpen(d, d.menu.hidden);
+    });
+    if (d.closeOnInnerClick) {
+      d.menu.addEventListener('click', () => setDropdownOpen(d, false));
+    }
+  }
   document.addEventListener('click', e => {
-    if (!projectMenuBtn.contains(e.target) && !projectMenu.contains(e.target)) {
-      setProjectMenuOpen(false);
+    for (const d of dropdowns) {
+      if (d.menu.hidden) continue;
+      if (!d.btn.contains(e.target) && !d.menu.contains(e.target)) {
+        setDropdownOpen(d, false);
+      }
     }
   });
 
