@@ -200,6 +200,7 @@
   let panModeToggle = false;
   let drag = null;          // {x, y, isPan, startPanX, startPanY}
   let selectedLineId = null;
+  let clipboardLine = null; // {x1, y1, x2, y2} — last copied line geometry
 
   const container = document.getElementById('canvas-container');
   const world = document.getElementById('world');
@@ -1507,6 +1508,29 @@
     ArrowLeft: [-1, 0], ArrowRight: [1, 0],
   };
 
+  function copySelectedLine() {
+    const line = state.lines.find(l => l.id === selectedLineId);
+    if (!line) return;
+    clipboardLine = { x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2 };
+  }
+
+  // Paste a copied line at the exact same image-pixel coordinates. The new line
+  // is never the calibration line (only one line holds the scale), and is
+  // selected so the user can immediately drag/nudge it to separate the stack.
+  function pasteLine() {
+    if (!clipboardLine || !state.imageDataUrl) return;
+    commit();
+    const line = {
+      id: nextLineId++,
+      x1: clipboardLine.x1, y1: clipboardLine.y1,
+      x2: clipboardLine.x2, y2: clipboardLine.y2,
+    };
+    state.lines.push(line);
+    selectedLineId = line.id;
+    save();
+    render();
+  }
+
   function nudgeSelected(sdx, sdy) {
     const line = state.lines.find(l => l.id === selectedLineId);
     if (!line) return;
@@ -1533,6 +1557,20 @@
     if (mod && (e.key === 'y' || e.key === 'Y')) {
       e.preventDefault();
       redo();
+      return;
+    }
+    if (mod && (e.key === 'c' || e.key === 'C')) {
+      if (selectedLineId != null) {
+        e.preventDefault();
+        copySelectedLine();
+      }
+      return;
+    }
+    if (mod && (e.key === 'v' || e.key === 'V')) {
+      if (clipboardLine) {
+        e.preventDefault();
+        pasteLine();
+      }
       return;
     }
     if (ARROW_DIRS[e.key] && selectedLineId != null) {
