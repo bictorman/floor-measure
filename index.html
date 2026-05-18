@@ -47,6 +47,13 @@
   #toolbar .dropdown-menu button:hover,
   #toolbar .dropdown-menu label.menu-item:hover { background: #4a4a4a; }
   #toolbar .info { font-size: 12px; color: #aaa; margin-left: auto; font-family: monospace; }
+  #toolbar .opacity-control {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: #aaa;
+  }
+  #toolbar .opacity-control input[type=range] {
+    width: 90px; accent-color: #4a8acc; cursor: pointer;
+  }
   #main { flex: 1; display: flex; overflow: hidden; min-height: 0; }
   #canvas-container {
     flex: 1; position: relative; overflow: hidden;
@@ -150,6 +157,10 @@
   <button id="calibrate-btn" title="Edit the scale-reference length">Set scale…</button>
   <button id="pan-btn" title="Toggle pan mode (or hold Shift / middle-click)">Pan</button>
   <button id="rotate-btn" title="Rotate image and measurements 90° clockwise (R)">Rotate 90°</button>
+  <label class="opacity-control" title="Background image opacity">
+    <span>Opacity</span>
+    <input type="range" id="opacity-input" min="0" max="100" value="100">
+  </label>
   <span class="sep"></span>
   <button id="zoom-out-btn" title="Zoom out">−</button>
   <button id="zoom-in-btn" title="Zoom in">+</button>
@@ -191,6 +202,7 @@
     panX: 0,
     panY: 0,
     rotation: 0,        // 0, 90, 180, 270 — clockwise
+    imageOpacity: 1,    // 0..1, applies only to the background image (not the lines/labels)
   });
 
   let state = defaultState();
@@ -211,6 +223,13 @@
   const dropHint = document.getElementById('drop-hint');
   const fileInput = document.getElementById('file-input');
   const panBtn = document.getElementById('pan-btn');
+  const opacityInput = document.getElementById('opacity-input');
+
+  function applyImageOpacity() {
+    const o = state.imageOpacity == null ? 1 : Math.max(0, Math.min(1, state.imageOpacity));
+    img.style.opacity = String(o);
+    if (opacityInput) opacityInput.value = String(Math.round(o * 100));
+  }
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -401,6 +420,7 @@
       state.imageW = img.naturalWidth;
       state.imageH = img.naturalHeight;
       img.style.display = '';
+      applyImageOpacity();
       dropHint.style.display = 'none';
       if (!preserveView) {
         fitToView();
@@ -1294,14 +1314,17 @@
     canvas.height = bh;
     const ctx = canvas.getContext('2d');
 
-    ctx.fillStyle = '#fff';
+    // Match the app's canvas background so reduced-opacity exports composite the
+    // same way they appear on screen.
+    ctx.fillStyle = '#0d0d0d';
     ctx.fillRect(0, 0, bw, bh);
 
     const [tx, ty] = rotationOffset();
     const θrad = normRotation() * Math.PI / 180;
 
-    // Draw the rotated image.
+    // Draw the rotated image, honoring the on-screen opacity setting.
     ctx.save();
+    ctx.globalAlpha = state.imageOpacity == null ? 1 : Math.max(0, Math.min(1, state.imageOpacity));
     ctx.translate(tx, ty);
     ctx.rotate(θrad);
     ctx.drawImage(img, 0, 0);
@@ -1317,7 +1340,7 @@
 
     for (const line of state.lines) {
       const isCal = line.id === state.calibrationLineId;
-      const color = isCal ? '#1f8c2f' : '#1565d8';
+      const color = isCal ? '#5fbf6f' : '#4a9fff';
       drawLineCanvas(ctx, line, color, strokeW, handleR, fontSize, labelOffset, tx, ty, θrad);
     }
 
@@ -1347,12 +1370,12 @@
     ctx.font = `600 ${fontSize}px monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.lineWidth = fontSize * 0.35;
+    ctx.lineWidth = fontSize * 0.3;
     ctx.lineJoin = 'round';
     ctx.miterLimit = 2;
-    ctx.strokeStyle = '#fff';
+    ctx.strokeStyle = '#000';
     ctx.strokeText(text, cx, cy);
-    ctx.fillStyle = '#a87800';
+    ctx.fillStyle = '#ffd54a';
     ctx.fillText(text, cx, cy);
   }
 
@@ -1400,8 +1423,8 @@
     ctx.font = `600 ${fontSize}px monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.lineWidth = fontSize * 0.3;
-    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = fontSize * 0.25;
+    ctx.strokeStyle = '#000';
     ctx.lineJoin = 'round';
     ctx.miterLimit = 2;
     ctx.strokeText(text, cx, cy);
@@ -1440,6 +1463,12 @@
     if (!projectMenuBtn.contains(e.target) && !projectMenu.contains(e.target)) {
       setProjectMenuOpen(false);
     }
+  });
+
+  opacityInput.addEventListener('input', () => {
+    state.imageOpacity = Math.max(0, Math.min(1, parseInt(opacityInput.value, 10) / 100));
+    img.style.opacity = String(state.imageOpacity);
+    save();
   });
 
   panBtn.addEventListener('click', () => {
@@ -1498,6 +1527,7 @@
     img.style.display = 'none';
     dropHint.style.display = '';
     localStorage.removeItem(STORAGE_KEY);
+    applyImageOpacity();
     applyTransform();
     render();
   });
@@ -1649,6 +1679,7 @@
 
   // ---------- boot ----------
   load();
+  applyImageOpacity();
   if (!state.imageDataUrl) {
     applyTransform();
     render();

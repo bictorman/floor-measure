@@ -17,6 +17,7 @@ No build step, no dependencies, no server — just open `index.html` in a browse
 - **Rotate** the whole thing (image + measurements) in 90° steps, keeping the visual center stationary
 - **Zoom** with the mouse wheel (centered on cursor), `+` / `−` / `Fit` / `1:1` buttons, or keyboard
 - **Pan** with `Shift`+drag, middle-click drag, or the `Pan` toggle button
+- **Background opacity** slider — fade the floor plan down (useful when measurements clutter the image, or for tracing)
 - **Export PNG** of the floor plan with all measurements baked in — labels stay upright regardless of rotation
 - **Save / Load project**: download a single `.fpm.json` file containing the image and every measurement, and load it back later (or on another machine). Drag-and-drop works too
 - **Sidebar list** of every measurement, with per-row delete, a separate "Edit" on the scale-reference row, and **inline length editing** on every row — type a new length (e.g. `2.5`, `250cm`, `2500mm`) and the line is geometrically resized from its midpoint to match. This is *not* the same as setting the scale: the px-per-metre ratio is unchanged, so other measurements stay put
