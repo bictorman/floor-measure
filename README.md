@@ -18,6 +18,7 @@ No build step, no dependencies, no server — just open `index.html` in a browse
 - **Zoom** with the mouse wheel (centered on cursor), `+` / `−` / `Fit` / `1:1` buttons, or keyboard
 - **Pan** with `Shift`+drag, middle-click drag, or the `Pan` toggle button
 - **Background opacity** slider — fade the floor plan down (useful when measurements clutter the image, or for tracing)
+- **Stretch X / Y** sliders — scale the background image horizontally or vertically without touching the lines. Useful for calibrating distorted floor plans (e.g. phone photos with perspective squish) by visually re-aligning image features to known-correct measurements
 - **Export PNG** of the floor plan with all measurements baked in — labels stay upright regardless of rotation
 - **Save / Load project**: download a single `.fpm.json` file containing the image and every measurement, and load it back later (or on another machine). Drag-and-drop works too
 - **Sidebar list** of every measurement, with per-row delete, a separate "Edit" on the scale-reference row, and **inline length editing** on every row — type a new length (e.g. `2.5`, `250cm`, `2500mm`) and the line is geometrically resized from its midpoint to match. This is *not* the same as setting the scale: the px-per-metre ratio is unchanged, so other measurements stay put
@@ -55,7 +56,7 @@ No build step, no dependencies, no server — just open `index.html` in a browse
 - Line endpoints are stored in image-pixel coordinates. Stroke widths and font sizes are scaled by `1/zoom` so handles and labels stay constant on screen.
 - Label text uses an SVG counter-rotation so it stays upright even when the world is rotated 90/180/270°. The PNG export does the equivalent in canvas: lines and handles rotate, label text does not.
 - Persistence is debounced (150 ms). The image is stored as a data URL — `localStorage` is typically capped at ~5–10 MB, so very large images may fail to persist (the app still works for the current session; a warning is logged to the console).
-- Project files are plain JSON with the image embedded as a base64 data URL. No zip / no external library. Shape: `{ format: "floorplan-measure", version: 1, savedAt, state: { imageDataUrl, imageW, imageH, lines, calibrationLineId, pixelsPerMeter, zoom, panX, panY, rotation } }`. Base64 makes the file ~33% larger than the raw image, but the file is human-inspectable and the format is trivial to parse by other tools.
+- Project files are plain JSON with the image embedded as a base64 data URL. No zip / no external library. Shape: `{ format: "floorplan-measure", version: 1, savedAt, state: { imageDataUrl, imageW, imageH, lines, calibrationLineId, pixelsPerMeter, zoom, panX, panY, rotation, imageOpacity, imageScaleX, imageScaleY } }`. Base64 makes the file ~33% larger than the raw image, but the file is human-inspectable and the format is trivial to parse by other tools.
 - Removing the calibration line deliberately *does not* auto-promote another line to the reference role. Doing so would silently change every other displayed length. Lines fall back to "no scale" until you set a new reference.
 - Reshaping the calibration line (dragging an endpoint) keeps its declared real length and updates the px/m ratio — all other measurements rescale live. Translating it (dragging the body) leaves the ratio unchanged.
 - Inline length editing (typing a new length in the sidebar) is deliberately distinct from calibration: it resizes the line geometrically from its midpoint, leaving the px/m ratio alone. For the calibration line, the line is resized the same way *and* its stored real length is updated so the ratio remains self-consistent — every other line's displayed length is unaffected.
@@ -65,7 +66,7 @@ No build step, no dependencies, no server — just open `index.html` in a browse
 - One line type (straight, two-point). No polylines, angles, or free-form annotations. Areas are computed automatically from closed loops of lines (no separate polygon tool).
 - Area detection relies on endpoints landing close enough to count as the same point (fixed tolerance of 4 image pixels). There is no snap-to-endpoint while drawing, so for reliable loops you may need to zoom in and align endpoints manually.
 - Metric only (millimetres / centimetres / metres). Adding imperial would be a small change to `formatLength` and the calibration prompt.
-- Calibration assumes the image is to scale and isotropic — no skew correction.
+- Calibration is a single scalar (pixels-per-metre). Anisotropic distortion can be partially compensated with the **Stretch X / Y** sliders (which scale the background image without moving the lines), but there is no perspective / rotational skew correction — for an arbitrarily warped phone photo you'd want a proper homography tool, not this.
 - Export is PNG. PDF export was considered but would either require a bundled library (jsPDF) or a print-to-PDF workaround; PNG keeps the file dependency-free.
 
 ## License

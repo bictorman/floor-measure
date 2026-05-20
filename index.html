@@ -47,14 +47,14 @@
   #toolbar .dropdown-menu button:hover,
   #toolbar .dropdown-menu label.menu-item:hover { background: #4a4a4a; }
   #toolbar .info { font-size: 12px; color: #aaa; margin-left: auto; font-family: monospace; }
-  #toolbar .dropdown-menu .opacity-control,
+  #toolbar .dropdown-menu .slider-control,
   #toolbar .dropdown-menu .menu-row {
     display: flex; align-items: center; gap: 8px;
     padding: 6px 10px; color: #aaa; font-size: 12px;
   }
-  #toolbar .dropdown-menu .opacity-control > span,
+  #toolbar .dropdown-menu .slider-control > span,
   #toolbar .dropdown-menu .menu-row > span { min-width: 52px; }
-  #toolbar .dropdown-menu .opacity-control input[type=range] {
+  #toolbar .dropdown-menu .slider-control input[type=range] {
     flex: 1; min-width: 120px; accent-color: #4a8acc; cursor: pointer;
   }
   #toolbar .dropdown-menu .menu-row-buttons {
@@ -173,10 +173,19 @@
     <button id="image-menu-btn" type="button" title="Image controls (rotate, opacity, zoom)">Image ▾</button>
     <div class="dropdown-menu" id="image-menu" hidden>
       <button id="rotate-btn" title="Rotate image and measurements 90° clockwise (R)">Rotate 90°</button>
-      <label class="opacity-control" title="Background image opacity">
+      <label class="slider-control" title="Background image opacity">
         <span>Opacity</span>
         <input type="range" id="opacity-input" min="0" max="100" value="100">
       </label>
+      <label class="slider-control" title="Stretch the background image horizontally — corrects distorted floor plans. Lines are not affected.">
+        <span>Stretch X</span>
+        <input type="range" id="stretch-x-input" min="50" max="200" step="1" value="100">
+      </label>
+      <label class="slider-control" title="Stretch the background image vertically — corrects distorted floor plans. Lines are not affected.">
+        <span>Stretch Y</span>
+        <input type="range" id="stretch-y-input" min="50" max="200" step="1" value="100">
+      </label>
+      <button id="reset-stretch-btn" type="button" title="Reset both stretch sliders to 100%">Reset stretch</button>
       <div class="menu-row" title="Zoom controls">
         <span>Zoom</span>
         <div class="menu-row-buttons">
@@ -225,6 +234,8 @@
     panY: 0,
     rotation: 0,        // 0, 90, 180, 270 — clockwise
     imageOpacity: 1,    // 0..1, applies only to the background image (not the lines/labels)
+    imageScaleX: 1,     // horizontal stretch of the background image. Lines stay in
+    imageScaleY: 1,     // image-pixel coords — used to correct distorted floor plans.
   });
 
   let state = defaultState();
@@ -246,11 +257,26 @@
   const fileInput = document.getElementById('file-input');
   const panBtn = document.getElementById('pan-btn');
   const opacityInput = document.getElementById('opacity-input');
+  const stretchXInput = document.getElementById('stretch-x-input');
+  const stretchYInput = document.getElementById('stretch-y-input');
 
   function applyImageOpacity() {
     const o = state.imageOpacity == null ? 1 : Math.max(0, Math.min(1, state.imageOpacity));
     img.style.opacity = String(o);
     if (opacityInput) opacityInput.value = String(Math.round(o * 100));
+  }
+
+  // Stretch lives on the <img> only — the SVG (which holds the lines) is unaffected,
+  // so line coordinates stay in unstretched image-pixel space. Top-left transform
+  // origin keeps image-pixel coord (0,0) anchored to world (0,0), which matches the
+  // SVG's viewBox.
+  function applyImageScale() {
+    const sx = state.imageScaleX == null ? 1 : Math.max(0.01, state.imageScaleX);
+    const sy = state.imageScaleY == null ? 1 : Math.max(0.01, state.imageScaleY);
+    img.style.transformOrigin = '0 0';
+    img.style.transform = `scale(${sx}, ${sy})`;
+    if (stretchXInput) stretchXInput.value = String(Math.round(sx * 100));
+    if (stretchYInput) stretchYInput.value = String(Math.round(sy * 100));
   }
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -443,6 +469,7 @@
       state.imageH = img.naturalHeight;
       img.style.display = '';
       applyImageOpacity();
+      applyImageScale();
       dropHint.style.display = 'none';
       if (!preserveView) {
         fitToView();
@@ -500,21 +527,36 @@
     return ((state.rotation % 360) + 360) % 360;
   }
 
-  // Translation that puts the rotated image's bbox at (0,0).
+  // Union of the unstretched line/SVG area and the stretched image. The view
+  // helpers (rotationOffset, rotatedBBox) work in these dimensions so Fit/1:1/
+  // rotate stay correct when the stretch sliders push the image past the
+  // original image bounds.
+  function stretchedBounds() {
+    const sx = state.imageScaleX == null ? 1 : Math.max(0.01, state.imageScaleX);
+    const sy = state.imageScaleY == null ? 1 : Math.max(0.01, state.imageScaleY);
+    return {
+      boundW: Math.max(state.imageW, state.imageW * sx),
+      boundH: Math.max(state.imageH, state.imageH * sy),
+    };
+  }
+
+  // Translation that puts the rotated union's bbox at (0,0).
   // Transform order applied to a point p: rotate(θ), then translate(tx, ty).
   function rotationOffset() {
     const r = normRotation();
-    if (r === 90)  return [state.imageH, 0];
-    if (r === 180) return [state.imageW, state.imageH];
-    if (r === 270) return [0, state.imageW];
+    const { boundW, boundH } = stretchedBounds();
+    if (r === 90)  return [boundH, 0];
+    if (r === 180) return [boundW, boundH];
+    if (r === 270) return [0, boundW];
     return [0, 0];
   }
 
   function rotatedBBox() {
     const r = normRotation();
+    const { boundW, boundH } = stretchedBounds();
     return (r === 90 || r === 270)
-      ? [state.imageH, state.imageW]
-      : [state.imageW, state.imageH];
+      ? [boundH, boundW]
+      : [boundW, boundH];
   }
 
   // Image-pixel coords → world coords (the space scale/pan act on).
@@ -1330,7 +1372,20 @@
       alert('Upload an image first.');
       return;
     }
-    const [bw, bh] = rotatedBBox();
+    // Lines live in unstretched image-pixel space; the stretched image may extend
+    // past that area. The canvas covers the union so neither gets clipped.
+    const sx = state.imageScaleX == null ? 1 : Math.max(0.01, state.imageScaleX);
+    const sy = state.imageScaleY == null ? 1 : Math.max(0.01, state.imageScaleY);
+    const drawW = state.imageW * sx;
+    const drawH = state.imageH * sy;
+    const boundW = Math.max(state.imageW, drawW);
+    const boundH = Math.max(state.imageH, drawH);
+    const r = normRotation();
+    const bw = (r === 90 || r === 270) ? boundH : boundW;
+    const bh = (r === 90 || r === 270) ? boundW : boundH;
+    const tx = (r === 90) ? boundH : (r === 180) ? boundW : 0;
+    const ty = (r === 180) ? boundH : (r === 270) ? boundW : 0;
+
     const canvas = document.createElement('canvas');
     canvas.width = bw;
     canvas.height = bh;
@@ -1341,15 +1396,15 @@
     ctx.fillStyle = '#0d0d0d';
     ctx.fillRect(0, 0, bw, bh);
 
-    const [tx, ty] = rotationOffset();
-    const θrad = normRotation() * Math.PI / 180;
+    const θrad = r * Math.PI / 180;
 
-    // Draw the rotated image, honoring the on-screen opacity setting.
+    // Draw the rotated (and possibly stretched) image, honoring the on-screen
+    // opacity setting.
     ctx.save();
     ctx.globalAlpha = state.imageOpacity == null ? 1 : Math.max(0, Math.min(1, state.imageOpacity));
     ctx.translate(tx, ty);
     ctx.rotate(θrad);
-    ctx.drawImage(img, 0, 0);
+    ctx.drawImage(img, 0, 0, drawW, drawH);
     ctx.restore();
 
     // Sizing scaled to image so it looks right on any resolution.
@@ -1505,6 +1560,41 @@
     save();
   });
 
+  // Changing stretch shifts the world offset (when rotation ≠ 0). Compensate
+  // pan so the image-pixel point under the screen center stays put visually.
+  function withStretchCenterStable(mutate) {
+    const rect = container.getBoundingClientRect();
+    const centerImg = state.imageW
+      ? screenToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2)
+      : null;
+    mutate();
+    applyImageScale();
+    if (centerImg) {
+      const w = imageToWorld(centerImg.x, centerImg.y);
+      state.panX = rect.width / 2 - state.zoom * w.x;
+      state.panY = rect.height / 2 - state.zoom * w.y;
+      applyTransform();
+    }
+    save();
+  }
+
+  stretchXInput.addEventListener('input', () => {
+    withStretchCenterStable(() => {
+      state.imageScaleX = Math.max(0.01, parseInt(stretchXInput.value, 10) / 100);
+    });
+  });
+  stretchYInput.addEventListener('input', () => {
+    withStretchCenterStable(() => {
+      state.imageScaleY = Math.max(0.01, parseInt(stretchYInput.value, 10) / 100);
+    });
+  });
+  document.getElementById('reset-stretch-btn').addEventListener('click', () => {
+    withStretchCenterStable(() => {
+      state.imageScaleX = 1;
+      state.imageScaleY = 1;
+    });
+  });
+
   panBtn.addEventListener('click', () => {
     panModeToggle = !panModeToggle;
     panBtn.classList.toggle('active', panModeToggle);
@@ -1562,6 +1652,7 @@
     dropHint.style.display = '';
     localStorage.removeItem(STORAGE_KEY);
     applyImageOpacity();
+    applyImageScale();
     applyTransform();
     render();
   });
@@ -1714,6 +1805,7 @@
   // ---------- boot ----------
   load();
   applyImageOpacity();
+  applyImageScale();
   if (!state.imageDataUrl) {
     applyTransform();
     render();
