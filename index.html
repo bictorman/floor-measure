@@ -114,6 +114,17 @@
   .measurement .length-input:focus {
     background: #1a1a1a; border-color: #4a8acc; outline: none;
   }
+  .measurement .name-input {
+    background: transparent; color: inherit; font: inherit; font-weight: 500;
+    border: 1px solid transparent; border-radius: 3px;
+    padding: 1px 4px; margin: -1px -4px;
+    width: 100%; min-width: 0;
+  }
+  .measurement .name-input::placeholder { color: #888; font-style: italic; }
+  .measurement .name-input:hover { border-color: #555; }
+  .measurement .name-input:focus {
+    background: #1a1a1a; border-color: #4a8acc; outline: none;
+  }
   .measurement .meta { color: #999; font-size: 11px; margin-top: 2px; }
   .measurement .actions { display: flex; gap: 4px; }
   .measurement button {
@@ -148,6 +159,12 @@
   .modal .actions button.primary { background: #2d5a8a; border-color: #4a8acc; }
   .modal .actions button:hover { background: #4a4a4a; }
   .modal .actions button.primary:hover { background: #3a6aaa; }
+  .modal .field-label { font-size: 12px; color: #aaa; margin: 10px 0 4px; }
+  .modal .field-label:first-of-type { margin-top: 0; }
+  .measurement.shape { border-left-color: #999; background: #333; }
+  .measurement .dims { color: #ccc; }
+  .measurement .area { color: #888; font-size: 11px; margin-top: 2px; }
+  #canvas-container.placing { cursor: crosshair; }
 </style>
 </head>
 <body>
@@ -197,8 +214,15 @@
       </div>
     </div>
   </div>
+  <div class="dropdown">
+    <button id="shape-menu-btn" type="button" title="Add an object (circle or rectangle). Requires the scale to be set first.">Add shape ▾</button>
+    <div class="dropdown-menu" id="shape-menu" hidden>
+      <button id="add-circle-btn" type="button" title="Add a circular object">Circle…</button>
+      <button id="add-rect-btn" type="button" title="Add a rectangular object">Rectangle…</button>
+    </div>
+  </div>
   <span class="sep"></span>
-  <button id="clear-lines-btn" title="Remove all measurements">Clear lines</button>
+  <button id="clear-lines-btn" title="Remove all measurements and shapes">Clear lines</button>
   <button id="reset-btn" title="Remove image and all measurements">Reset all</button>
   <span class="info" id="status">No image loaded</span>
 </div>
@@ -227,6 +251,7 @@
     imageW: 0,
     imageH: 0,
     lines: [],          // {id, x1, y1, x2, y2, realLength?}
+    shapes: [],         // {id, type:'circle'|'rect', cx, cy, radiusM?, widthM?, lengthM?, angle?}
     calibrationLineId: null,
     pixelsPerMeter: null,
     zoom: 1,
@@ -240,12 +265,16 @@
 
   let state = defaultState();
   let nextLineId = 1;
+  let nextShapeId = 1;
   let drawingLine = null;   // {x1, y1}
   let mouseWorld = null;
   let panModeToggle = false;
   let drag = null;          // {x, y, isPan, startPanX, startPanY}
   let selectedLineId = null;
+  let selectedShapeId = null;
   let clipboardLine = null; // {x1, y1, x2, y2} — last copied line geometry
+  let clipboardShape = null; // last copied shape (sans id); null when a line is the active clipboard
+  let pendingShape = null;  // {type, radiusM?, widthM?, lengthM?} — waiting for next click to place
 
   const container = document.getElementById('canvas-container');
   const world = document.getElementById('world');
@@ -259,6 +288,8 @@
   const opacityInput = document.getElementById('opacity-input');
   const stretchXInput = document.getElementById('stretch-x-input');
   const stretchYInput = document.getElementById('stretch-y-input');
+  const shapeMenuBtn = document.getElementById('shape-menu-btn');
+  const shapeMenu = document.getElementById('shape-menu');
 
   function applyImageOpacity() {
     const o = state.imageOpacity == null ? 1 : Math.max(0, Math.min(1, state.imageOpacity));
@@ -300,8 +331,12 @@
     try {
       const loaded = JSON.parse(data);
       state = Object.assign(defaultState(), loaded);
+      if (!Array.isArray(state.shapes)) state.shapes = [];
       if (state.lines.length) {
         nextLineId = Math.max(...state.lines.map(l => l.id)) + 1;
+      }
+      if (state.shapes.length) {
+        nextShapeId = Math.max(...state.shapes.map(s => s.id)) + 1;
       }
       if (state.imageDataUrl) {
         loadImage(true);
@@ -329,6 +364,7 @@
   function dataSnapshot() {
     return {
       lines: state.lines.map(l => ({ ...l })),
+      shapes: state.shapes.map(s => ({ ...s })),
       calibrationLineId: state.calibrationLineId,
       pixelsPerMeter: state.pixelsPerMeter,
     };
@@ -336,10 +372,18 @@
 
   function applySnapshot(snap) {
     state.lines = snap.lines.map(l => ({ ...l }));
+    state.shapes = (snap.shapes || []).map(s => ({ ...s }));
     state.calibrationLineId = snap.calibrationLineId;
     state.pixelsPerMeter = snap.pixelsPerMeter;
     if (selectedLineId != null && !state.lines.some(l => l.id === selectedLineId)) {
       selectedLineId = null;
+    }
+    if (selectedShapeId != null && !state.shapes.some(s => s.id === selectedShapeId)) {
+      selectedShapeId = null;
+    }
+    if (!state.pixelsPerMeter && pendingShape) {
+      pendingShape = null;
+      updatePlacingCursor();
     }
   }
 
@@ -441,9 +485,13 @@
         return;
       }
       state = Object.assign(defaultState(), payload.state);
+      if (!Array.isArray(state.shapes)) state.shapes = [];
       nextLineId = state.lines.length ? Math.max(...state.lines.map(l => l.id)) + 1 : 1;
+      nextShapeId = state.shapes.length ? Math.max(...state.shapes.map(s => s.id)) + 1 : 1;
       drawingLine = null;
       selectedLineId = null;
+      selectedShapeId = null;
+      pendingShape = null;
       clearHistory();
       if (state.imageDataUrl) {
         loadImage(true);
@@ -494,6 +542,8 @@
       state.imageDataUrl = reader.result;
       drawingLine = null;
       selectedLineId = null;
+      selectedShapeId = null;
+      pendingShape = null;
       clearHistory();
       loadImage(false);
     };
@@ -605,6 +655,15 @@
     const fontSize = 13 * scale;
     const labelOffset = 10 * scale;
 
+    // Shapes go below the lines so endpoint handles and labels remain clickable when
+    // they overlap a shape. No-op if calibration is missing, since dimensions are in
+    // meters and need pixelsPerMeter to render at the right size.
+    if (state.pixelsPerMeter) {
+      for (const shape of state.shapes) {
+        drawShape(shape, strokeW);
+      }
+    }
+
     for (const line of state.lines) {
       const isCal = line.id === state.calibrationLineId;
       drawLine(line, isCal ? '#5fbf6f' : '#4a9fff', strokeW, handleR, fontSize, labelOffset);
@@ -614,13 +673,108 @@
       drawPreview(strokeW, fontSize, labelOffset);
     }
 
+    if (pendingShape && mouseWorld && state.pixelsPerMeter) {
+      drawShapePreview(strokeW);
+    }
+
     const areaFontSize = 15 * scale;
     for (const a of findLoopAreas()) {
       drawAreaLabel(a, areaFontSize);
     }
 
     renderMeasurements();
+    updateAddShapeBtn();
     updateStatus();
+  }
+
+  function drawShape(shape, strokeW) {
+    const isSelected = shape.id === selectedShapeId;
+    const fill = 'rgba(120, 120, 120, 0.5)';
+    const stroke = isSelected ? '#ffaa33' : '#555';
+    const sw = isSelected ? strokeW * 1.6 : strokeW;
+    const ppm = state.pixelsPerMeter;
+
+    if (shape.type === 'circle') {
+      const c = document.createElementNS(SVG_NS, 'circle');
+      c.setAttribute('cx', shape.cx);
+      c.setAttribute('cy', shape.cy);
+      c.setAttribute('r', shape.radiusM * ppm);
+      c.setAttribute('fill', fill);
+      c.setAttribute('stroke', stroke);
+      c.setAttribute('stroke-width', sw);
+      svg.appendChild(c);
+    } else if (shape.type === 'rect') {
+      const wPx = shape.widthM * ppm;
+      const hPx = shape.lengthM * ppm;
+      const g = document.createElementNS(SVG_NS, 'g');
+      g.setAttribute('transform', `translate(${shape.cx} ${shape.cy}) rotate(${shape.angle || 0})`);
+      const r = document.createElementNS(SVG_NS, 'rect');
+      r.setAttribute('x', -wPx / 2);
+      r.setAttribute('y', -hPx / 2);
+      r.setAttribute('width', wPx);
+      r.setAttribute('height', hPx);
+      r.setAttribute('fill', fill);
+      r.setAttribute('stroke', stroke);
+      r.setAttribute('stroke-width', sw);
+      g.appendChild(r);
+      if (isSelected) {
+        // Rotation handle: a stem + knob above the top edge in the rect's local frame.
+        // Lives well outside the body so drags are naturally tangential to the center,
+        // sidestepping the radial-drag dead zone of the edge band.
+        const offset = ROT_HANDLE_OFFSET / state.zoom;
+        const knobR = ROT_HANDLE_RADIUS / state.zoom;
+        const stem = document.createElementNS(SVG_NS, 'line');
+        stem.setAttribute('x1', 0);
+        stem.setAttribute('y1', -hPx / 2);
+        stem.setAttribute('x2', 0);
+        stem.setAttribute('y2', -hPx / 2 - offset);
+        stem.setAttribute('stroke', '#ffaa33');
+        stem.setAttribute('stroke-width', strokeW);
+        g.appendChild(stem);
+        const knob = document.createElementNS(SVG_NS, 'circle');
+        knob.setAttribute('cx', 0);
+        knob.setAttribute('cy', -hPx / 2 - offset);
+        knob.setAttribute('r', knobR);
+        knob.setAttribute('fill', '#ffaa33');
+        knob.setAttribute('stroke', '#fff');
+        knob.setAttribute('stroke-width', strokeW * 0.6);
+        g.appendChild(knob);
+      }
+      svg.appendChild(g);
+    }
+  }
+
+  function drawShapePreview(strokeW) {
+    const dash = 6 / state.zoom;
+    const fill = 'rgba(120, 120, 120, 0.35)';
+    const stroke = '#ffaa33';
+    const ppm = state.pixelsPerMeter;
+
+    if (pendingShape.type === 'circle') {
+      const c = document.createElementNS(SVG_NS, 'circle');
+      c.setAttribute('cx', mouseWorld.x);
+      c.setAttribute('cy', mouseWorld.y);
+      c.setAttribute('r', pendingShape.radiusM * ppm);
+      c.setAttribute('fill', fill);
+      c.setAttribute('stroke', stroke);
+      c.setAttribute('stroke-width', strokeW);
+      c.setAttribute('stroke-dasharray', `${dash} ${dash}`);
+      svg.appendChild(c);
+    } else if (pendingShape.type === 'rect') {
+      const wPx = pendingShape.widthM * ppm;
+      const hPx = pendingShape.lengthM * ppm;
+      const r = document.createElementNS(SVG_NS, 'rect');
+      r.setAttribute('x', -wPx / 2);
+      r.setAttribute('y', -hPx / 2);
+      r.setAttribute('width', wPx);
+      r.setAttribute('height', hPx);
+      r.setAttribute('fill', fill);
+      r.setAttribute('stroke', stroke);
+      r.setAttribute('stroke-width', strokeW);
+      r.setAttribute('stroke-dasharray', `${dash} ${dash}`);
+      r.setAttribute('transform', `translate(${mouseWorld.x} ${mouseWorld.y})`);
+      svg.appendChild(r);
+    }
   }
 
   function drawLine(line, color, strokeW, handleR, fontSize, labelOffset) {
@@ -743,7 +897,7 @@
 
   function renderMeasurements() {
     measurementsList.innerHTML = '';
-    if (!state.lines.length) {
+    if (!state.lines.length && !state.shapes.length) {
       const hint = document.createElement('div');
       hint.id = 'empty-hint';
       if (!state.imageDataUrl) {
@@ -751,7 +905,7 @@
       } else if (!state.pixelsPerMeter) {
         hint.textContent = 'Click two points on the image to draw the first line. You will then be asked for its real-world length to set the scale.';
       } else {
-        hint.textContent = 'Click two points to add another measurement.';
+        hint.textContent = 'Click two points to add another measurement, or use Add shape to place an object.';
       }
       measurementsList.appendChild(hint);
       return;
@@ -766,7 +920,12 @@
         + (isSel ? ' selected' : '');
       row.title = 'Click to select (arrow keys to nudge, Shift+arrows for 10×)';
       row.addEventListener('click', () => {
-        selectedLineId = (selectedLineId === line.id) ? null : line.id;
+        if (selectedLineId === line.id) {
+          selectedLineId = null;
+        } else {
+          selectedLineId = line.id;
+          selectedShapeId = null;
+        }
         render();
       });
 
@@ -832,6 +991,63 @@
       del.textContent = '×';
       del.title = 'Remove this measurement';
       del.addEventListener('click', e => { stop(e); removeLine(line.id); });
+      actions.appendChild(del);
+      row.appendChild(actions);
+
+      measurementsList.appendChild(row);
+    }
+
+    for (const shape of state.shapes) {
+      const isSel = shape.id === selectedShapeId;
+      const row = document.createElement('div');
+      row.className = 'measurement shape' + (isSel ? ' selected' : '');
+      row.title = 'Click to select (drag on canvas to move; drag near a rectangle edge to rotate)';
+      row.addEventListener('click', () => {
+        if (selectedShapeId === shape.id) {
+          selectedShapeId = null;
+        } else {
+          selectedShapeId = shape.id;
+          selectedLineId = null;
+        }
+        render();
+      });
+
+      const left = document.createElement('div');
+      left.style.flex = '1';
+      left.style.minWidth = '0';
+      const nameInput = document.createElement('input');
+      nameInput.className = 'name-input';
+      nameInput.type = 'text';
+      nameInput.value = shape.name || '';
+      // Placeholder doubles as the visible default: shows the dimensions when no
+      // name is set, disappears the moment the user types one.
+      nameInput.placeholder = shape.type === 'circle'
+        ? `r=${formatLength(shape.radiusM)}`
+        : `${formatLength(shape.widthM)} × ${formatLength(shape.lengthM)}`;
+      nameInput.spellcheck = false;
+      nameInput.title = 'Click to name this shape';
+      nameInput.addEventListener('click', e => { e.stopPropagation(); nameInput.select(); });
+      nameInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
+        else if (e.key === 'Escape') { nameInput.value = shape.name || ''; nameInput.blur(); }
+      });
+      nameInput.addEventListener('change', () => setShapeName(shape, nameInput.value));
+      left.appendChild(nameInput);
+      row.appendChild(left);
+
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const stop = e => e.stopPropagation();
+      const edit = document.createElement('button');
+      edit.textContent = 'Edit';
+      edit.title = 'Edit dimensions';
+      edit.addEventListener('click', e => { stop(e); editShape(shape); });
+      actions.appendChild(edit);
+      const del = document.createElement('button');
+      del.className = 'del';
+      del.textContent = '×';
+      del.title = 'Remove this shape';
+      del.addEventListener('click', e => { stop(e); removeShape(shape.id); });
       actions.appendChild(del);
       row.appendChild(actions);
 
@@ -1064,15 +1280,178 @@
     if (state.calibrationLineId === id) {
       state.calibrationLineId = null;
       state.pixelsPerMeter = null;
+      // Losing the scale invalidates any in-flight shape placement.
+      if (pendingShape) {
+        pendingShape = null;
+        updatePlacingCursor();
+      }
     }
     if (selectedLineId === id) selectedLineId = null;
     save();
     render();
   }
 
+  // ---------- shapes ----------
+  // Dimensions live in real-world meters; only on render do they become pixels via
+  // pixelsPerMeter. That way the same shape redraws correctly if calibration is later
+  // adjusted, and matches what the user typed in the Add modal.
+  function shapeAreaM2(s) {
+    if (s.type === 'circle') return Math.PI * s.radiusM * s.radiusM;
+    if (s.type === 'rect') return s.widthM * s.lengthM;
+    return 0;
+  }
+
+  function addCircleAction() {
+    if (!state.pixelsPerMeter) return;
+    showFieldsModal({
+      title: 'Add circle',
+      message: 'Click on the floor plan to place the circle after entering its radius.',
+      fields: [{ label: 'Radius (m)', placeholder: 'e.g. 0.5' }],
+      onOk: ([r]) => {
+        if (!(r > 0)) return;
+        drawingLine = null;
+        pendingShape = { type: 'circle', radiusM: r };
+        updatePlacingCursor();
+        render();
+      },
+    });
+  }
+
+  function addRectAction() {
+    if (!state.pixelsPerMeter) return;
+    showFieldsModal({
+      title: 'Add rectangle',
+      message: 'Click on the floor plan to place the rectangle after entering its dimensions.',
+      fields: [
+        { label: 'Width (m)', placeholder: 'e.g. 1.5' },
+        { label: 'Length (m)', placeholder: 'e.g. 2.0' },
+      ],
+      onOk: ([w, l]) => {
+        if (!(w > 0) || !(l > 0)) return;
+        drawingLine = null;
+        pendingShape = { type: 'rect', widthM: w, lengthM: l };
+        updatePlacingCursor();
+        render();
+      },
+    });
+  }
+
+  function editShape(shape) {
+    if (shape.type === 'circle') {
+      showFieldsModal({
+        title: 'Edit circle',
+        message: 'Radius in meters.',
+        fields: [{ label: 'Radius (m)', defaultValue: shape.radiusM }],
+        onOk: ([r]) => {
+          if (!(r > 0)) return;
+          commit();
+          shape.radiusM = r;
+          save();
+          render();
+        },
+      });
+    } else {
+      showFieldsModal({
+        title: 'Edit rectangle',
+        message: 'Dimensions in meters; angle in degrees.',
+        fields: [
+          { label: 'Width (m)', defaultValue: shape.widthM },
+          { label: 'Length (m)', defaultValue: shape.lengthM },
+          { label: 'Angle (°)', defaultValue: shape.angle || 0 },
+        ],
+        onOk: ([w, l, a]) => {
+          if (!(w > 0) || !(l > 0)) return;
+          commit();
+          shape.widthM = w;
+          shape.lengthM = l;
+          // Leave angle untouched if the user cleared the field.
+          if (Number.isFinite(a)) shape.angle = a;
+          save();
+          render();
+        },
+      });
+    }
+  }
+
+  function removeShape(id) {
+    if (!state.shapes.some(s => s.id === id)) return;
+    commit();
+    state.shapes = state.shapes.filter(s => s.id !== id);
+    if (selectedShapeId === id) selectedShapeId = null;
+    save();
+    render();
+  }
+
+  function setShapeName(shape, raw) {
+    const trimmed = (raw || '').trim();
+    const current = shape.name || '';
+    if (trimmed === current) return;
+    commit();
+    if (trimmed) shape.name = trimmed;
+    else delete shape.name;
+    save();
+    render();
+  }
+
+  function placePendingShape(screenX, screenY) {
+    if (!pendingShape || !state.pixelsPerMeter) return;
+    const pt = screenToWorld(screenX, screenY);
+    commit();
+    let shape;
+    if (pendingShape.type === 'circle') {
+      shape = {
+        id: nextShapeId++, type: 'circle',
+        cx: pt.x, cy: pt.y,
+        radiusM: pendingShape.radiusM,
+      };
+    } else {
+      shape = {
+        id: nextShapeId++, type: 'rect',
+        cx: pt.x, cy: pt.y,
+        widthM: pendingShape.widthM, lengthM: pendingShape.lengthM,
+        angle: 0,
+      };
+    }
+    state.shapes.push(shape);
+    selectedShapeId = shape.id;
+    selectedLineId = null;
+    pendingShape = null;
+    updatePlacingCursor();
+    save();
+    render();
+  }
+
+  function cancelPendingShape() {
+    if (!pendingShape) return;
+    pendingShape = null;
+    updatePlacingCursor();
+    render();
+  }
+
+  function updatePlacingCursor() {
+    container.classList.toggle('placing', !!pendingShape);
+  }
+
+  function updateAddShapeBtn() {
+    const enabled = !!state.pixelsPerMeter;
+    if (shapeMenuBtn) {
+      shapeMenuBtn.disabled = !enabled;
+      shapeMenuBtn.title = enabled
+        ? 'Add an object (circle or rectangle)'
+        : 'Add an object — draw a line first to set the scale.';
+    }
+    if (!enabled && shapeMenu && !shapeMenu.hidden) {
+      shapeMenu.hidden = true;
+      shapeMenuBtn.classList.remove('active');
+    }
+  }
+
   // ---------- hit-testing ----------
   const HANDLE_HIT_SCREEN = 10;
   const LINE_HIT_SCREEN = 6;
+  const ROT_HANDLE_OFFSET = 22;
+  const ROT_HANDLE_RADIUS = 6;
+  const ROT_HANDLE_HIT_SCREEN = 12;
 
   function distToSegment(px, py, ax, ay, bx, by) {
     const dx = bx - ax, dy = by - ay;
@@ -1081,6 +1460,47 @@
     let t = ((px - ax) * dx + (py - ay) * dy) / len2;
     t = Math.max(0, Math.min(1, t));
     return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  }
+
+  // Hit-test shapes top-most first. Returns {shape, zone:'body'|'rotate'} or null.
+  // 'rotate' is the screen-thin band along a rectangle's edges; circles only have 'body'.
+  function hitTestShape(imgX, imgY) {
+    if (!state.pixelsPerMeter) return null;
+    const ppm = state.pixelsPerMeter;
+    const edgeThreshBase = 12 / state.zoom;
+    for (let i = state.shapes.length - 1; i >= 0; i--) {
+      const s = state.shapes[i];
+      if (s.type === 'circle') {
+        const rPx = s.radiusM * ppm;
+        if (Math.hypot(imgX - s.cx, imgY - s.cy) <= rPx) {
+          return { shape: s, zone: 'body' };
+        }
+      } else if (s.type === 'rect') {
+        const halfW = (s.widthM * ppm) / 2;
+        const halfH = (s.lengthM * ppm) / 2;
+        const α = (s.angle || 0) * Math.PI / 180;
+        const cα = Math.cos(α), sα = Math.sin(α);
+        const dx = imgX - s.cx, dy = imgY - s.cy;
+        const lx = dx * cα + dy * sα;
+        const ly = -dx * sα + dy * cα;
+        // Dedicated rotation knob above the top edge — only when shape is selected.
+        // Test before the body bounds so a click on the knob (outside the rect) still hits.
+        if (s.id === selectedShapeId) {
+          const offset = ROT_HANDLE_OFFSET / state.zoom;
+          const hitR = ROT_HANDLE_HIT_SCREEN / state.zoom;
+          if (Math.hypot(lx - 0, ly - (-halfH - offset)) <= hitR) {
+            return { shape: s, zone: 'rotate' };
+          }
+        }
+        if (Math.abs(lx) > halfW || Math.abs(ly) > halfH) continue;
+        // Clamp the edge band so small rectangles still have a movable body zone;
+        // otherwise the band swallows the whole interior and the shape can only be rotated.
+        const edgeThresh = Math.min(edgeThreshBase, Math.min(halfW, halfH) / 2);
+        const distToEdge = Math.min(halfW - Math.abs(lx), halfH - Math.abs(ly));
+        return { shape: s, zone: distToEdge <= edgeThresh ? 'rotate' : 'body' };
+      }
+    }
+    return null;
   }
 
   // Returns {line, endpoint} where endpoint is 1, 2, or 0 (whole line).
@@ -1134,12 +1554,25 @@
   }
 
   function updateHoverCursor() {
+    if (pendingShape) {
+      container.style.cursor = ''; // .placing class supplies crosshair
+      return;
+    }
     if (panModeToggle || drawingLine || !state.imageDataUrl || !mouseWorld) {
       container.style.cursor = '';
       return;
     }
-    const hit = hitTest(mouseWorld.x, mouseWorld.y);
-    container.style.cursor = hit ? (hit.endpoint === 0 ? 'move' : 'grab') : '';
+    const lineHit = hitTest(mouseWorld.x, mouseWorld.y);
+    if (lineHit) {
+      container.style.cursor = lineHit.endpoint === 0 ? 'move' : 'grab';
+      return;
+    }
+    const shapeHit = hitTestShape(mouseWorld.x, mouseWorld.y);
+    if (shapeHit) {
+      container.style.cursor = shapeHit.zone === 'rotate' ? 'crosshair' : 'move';
+      return;
+    }
+    container.style.cursor = '';
   }
 
   // ---------- mouse interaction ----------
@@ -1149,6 +1582,14 @@
     if (!state.imageDataUrl) return;
     if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
     e.preventDefault();
+    // Pending shape placement claims the left-click before pan-mode toggle, since
+    // the placing cursor signals that the next click drops the shape. Middle/right
+    // mouse still pans so the user can reposition without canceling placement.
+    if (pendingShape && e.button === 0) {
+      drag = { type: 'click-place-shape', x: e.clientX, y: e.clientY, moved: false };
+      return;
+    }
+
     const isPan = e.button === 1 || e.button === 2 || (e.button === 0 && (panModeToggle || e.shiftKey));
 
     if (isPan) {
@@ -1178,6 +1619,27 @@
         };
         if (selectedLineId !== hit.line.id) {
           selectedLineId = hit.line.id;
+          selectedShapeId = null;
+          render();
+        }
+        container.classList.add('grabbing');
+        return;
+      }
+      const shapeHit = hitTestShape(pt.x, pt.y);
+      if (shapeHit) {
+        const s = shapeHit.shape;
+        drag = {
+          type: shapeHit.zone === 'rotate' ? 'rotate-shape' : 'move-shape',
+          x: e.clientX, y: e.clientY,
+          shape: s,
+          startImg: pt,
+          orig: { cx: s.cx, cy: s.cy, angle: s.angle || 0 },
+          startAngle: Math.atan2(pt.y - s.cy, pt.x - s.cx),
+          moved: false,
+        };
+        if (selectedShapeId !== s.id) {
+          selectedShapeId = s.id;
+          selectedLineId = null;
           render();
         }
         container.classList.add('grabbing');
@@ -1224,11 +1686,24 @@
           drag.line.y2 = drag.orig.y2 + ddy;
         }
         render();
+      } else if (drag.moved && drag.type === 'move-shape') {
+        if (!drag.committed) { commit(); drag.committed = true; }
+        const ddx = mouseWorld.x - drag.startImg.x;
+        const ddy = mouseWorld.y - drag.startImg.y;
+        drag.shape.cx = drag.orig.cx + ddx;
+        drag.shape.cy = drag.orig.cy + ddy;
+        render();
+      } else if (drag.moved && drag.type === 'rotate-shape') {
+        if (!drag.committed) { commit(); drag.committed = true; }
+        const curAngle = Math.atan2(mouseWorld.y - drag.shape.cy, mouseWorld.x - drag.shape.cx);
+        const deltaDeg = (curAngle - drag.startAngle) * 180 / Math.PI;
+        drag.shape.angle = drag.orig.angle + deltaDeg;
+        render();
       }
     } else {
       updateHoverCursor();
     }
-    if (drawingLine) render();
+    if (drawingLine || pendingShape) render();
   });
 
   window.addEventListener('mouseup', e => {
@@ -1244,6 +1719,17 @@
     if (d.type === 'move-handle' || d.type === 'move-line') {
       if (d.moved) { save(); render(); }
       updateHoverCursor();
+      return;
+    }
+    if (d.type === 'move-shape' || d.type === 'rotate-shape') {
+      if (d.moved) { save(); render(); }
+      updateHoverCursor();
+      return;
+    }
+    if (d.type === 'click-place-shape') {
+      if (d.moved) return;
+      if (!container.contains(e.target)) return;
+      placePendingShape(e.clientX, e.clientY);
       return;
     }
     if (d.type === 'click') {
@@ -1415,6 +1901,13 @@
     const fontSize = Math.max(14, base * 7);
     const labelOffset = fontSize * 0.7;
 
+    // Shapes go under the lines, matching the on-screen layer order.
+    if (state.pixelsPerMeter) {
+      for (const shape of state.shapes) {
+        drawShapeCanvas(ctx, shape, strokeW, tx, ty, θrad);
+      }
+    }
+
     for (const line of state.lines) {
       const isCal = line.id === state.calibrationLineId;
       const color = isCal ? '#5fbf6f' : '#4a9fff';
@@ -1454,6 +1947,34 @@
     ctx.strokeText(text, cx, cy);
     ctx.fillStyle = '#ffd54a';
     ctx.fillText(text, cx, cy);
+  }
+
+  function drawShapeCanvas(ctx, shape, strokeW, tx, ty, θrad) {
+    const ppm = state.pixelsPerMeter;
+    ctx.save();
+    ctx.translate(tx, ty);
+    ctx.rotate(θrad);
+    ctx.fillStyle = 'rgba(120, 120, 120, 0.6)';
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = strokeW;
+    if (shape.type === 'circle') {
+      ctx.beginPath();
+      ctx.arc(shape.cx, shape.cy, shape.radiusM * ppm, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    } else if (shape.type === 'rect') {
+      const wPx = shape.widthM * ppm;
+      const hPx = shape.lengthM * ppm;
+      ctx.save();
+      ctx.translate(shape.cx, shape.cy);
+      ctx.rotate((shape.angle || 0) * Math.PI / 180);
+      ctx.beginPath();
+      ctx.rect(-wPx / 2, -hPx / 2, wPx, hPx);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
   }
 
   function drawLineCanvas(ctx, line, color, strokeW, handleR, fontSize, labelOffset, tx, ty, θrad) {
@@ -1528,7 +2049,10 @@
   const dropdowns = [
     { btn: document.getElementById('project-menu-btn'), menu: document.getElementById('project-menu'), closeOnInnerClick: true },
     { btn: document.getElementById('image-menu-btn'), menu: document.getElementById('image-menu'), closeOnInnerClick: false },
+    { btn: shapeMenuBtn, menu: shapeMenu, closeOnInnerClick: true },
   ];
+  document.getElementById('add-circle-btn').addEventListener('click', addCircleAction);
+  document.getElementById('add-rect-btn').addEventListener('click', addRectAction);
   function setDropdownOpen(target, open) {
     for (const d of dropdowns) {
       const active = d === target && open;
@@ -1628,14 +2152,18 @@
   });
 
   document.getElementById('clear-lines-btn').addEventListener('click', () => {
-    if (!state.lines.length) return;
-    if (!confirm('Remove all measurements (including the scale reference)?')) return;
+    if (!state.lines.length && !state.shapes.length) return;
+    if (!confirm('Remove all measurements and shapes (including the scale reference)?')) return;
     commit();
     state.lines = [];
+    state.shapes = [];
     state.calibrationLineId = null;
     state.pixelsPerMeter = null;
     drawingLine = null;
     selectedLineId = null;
+    selectedShapeId = null;
+    pendingShape = null;
+    updatePlacingCursor();
     save();
     render();
   });
@@ -1644,8 +2172,12 @@
     if (!confirm('Remove the image and all measurements?')) return;
     state = defaultState();
     nextLineId = 1;
+    nextShapeId = 1;
     drawingLine = null;
     selectedLineId = null;
+    selectedShapeId = null;
+    pendingShape = null;
+    updatePlacingCursor();
     clearHistory();
     img.src = '';
     img.style.display = 'none';
@@ -1667,6 +2199,7 @@
     const line = state.lines.find(l => l.id === selectedLineId);
     if (!line) return;
     clipboardLine = { x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2 };
+    clipboardShape = null;
   }
 
   // Paste a copied line at the exact same image-pixel coordinates. The new line
@@ -1682,6 +2215,36 @@
     };
     state.lines.push(line);
     selectedLineId = line.id;
+    selectedShapeId = null;
+    save();
+    render();
+  }
+
+  function copySelectedShape() {
+    const shape = state.shapes.find(s => s.id === selectedShapeId);
+    if (!shape) return;
+    // Clone every prop except the id; that includes name, angle, dims.
+    const { id, ...rest } = shape;
+    clipboardShape = { ...rest };
+    clipboardLine = null;
+  }
+
+  // Offset the duplicate so the user can see it instead of an invisible stack.
+  // 20 image-pixels feels small at typical zoom levels while still being clearly
+  // separated from the original outline.
+  const SHAPE_PASTE_OFFSET = 20;
+
+  function pasteShape() {
+    // Require a scale, matching the Add shape guard — otherwise render() and
+    // hitTestShape() skip the shape and it becomes an invisible orphan.
+    if (!clipboardShape || !state.imageDataUrl || !state.pixelsPerMeter) return;
+    commit();
+    const shape = { ...clipboardShape, id: nextShapeId++ };
+    shape.cx = (shape.cx || 0) + SHAPE_PASTE_OFFSET;
+    shape.cy = (shape.cy || 0) + SHAPE_PASTE_OFFSET;
+    state.shapes.push(shape);
+    selectedShapeId = shape.id;
+    selectedLineId = null;
     save();
     render();
   }
@@ -1697,6 +2260,18 @@
     const dy = sdx * s + sdy * c;
     line.x1 += dx; line.y1 += dy;
     line.x2 += dx; line.y2 += dy;
+    save();
+    render();
+  }
+
+  function nudgeShape(sdx, sdy) {
+    const shape = state.shapes.find(s => s.id === selectedShapeId);
+    if (!shape) return;
+    commit('nudge-shape:' + shape.id);
+    const θ = -normRotation() * Math.PI / 180;
+    const c = Math.cos(θ), s = Math.sin(θ);
+    shape.cx += sdx * c - sdy * s;
+    shape.cy += sdx * s + sdy * c;
     save();
     render();
   }
@@ -1718,29 +2293,43 @@
       if (selectedLineId != null) {
         e.preventDefault();
         copySelectedLine();
+      } else if (selectedShapeId != null) {
+        e.preventDefault();
+        copySelectedShape();
       }
       return;
     }
     if (mod && (e.key === 'v' || e.key === 'V')) {
-      if (clipboardLine) {
+      if (clipboardShape) {
+        e.preventDefault();
+        pasteShape();
+      } else if (clipboardLine) {
         e.preventDefault();
         pasteLine();
       }
       return;
     }
-    if (ARROW_DIRS[e.key] && selectedLineId != null) {
+    if (ARROW_DIRS[e.key] && (selectedLineId != null || selectedShapeId != null)) {
       e.preventDefault();
       const [dx, dy] = ARROW_DIRS[e.key];
       const step = e.shiftKey ? 10 : 1;
-      nudgeSelected(dx * step, dy * step);
+      if (selectedLineId != null) nudgeSelected(dx * step, dy * step);
+      else nudgeShape(dx * step, dy * step);
       return;
     }
     if (e.key === 'Escape') {
-      if (drawingLine) { drawingLine = null; render(); }
+      if (pendingShape) cancelPendingShape();
+      else if (drawingLine) { drawingLine = null; render(); }
       else if (selectedLineId != null) { selectedLineId = null; render(); }
-    } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedLineId != null) {
-      e.preventDefault();
-      removeLine(selectedLineId);
+      else if (selectedShapeId != null) { selectedShapeId = null; render(); }
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (selectedLineId != null) {
+        e.preventDefault();
+        removeLine(selectedLineId);
+      } else if (selectedShapeId != null) {
+        e.preventDefault();
+        removeShape(selectedShapeId);
+      }
     } else if (e.key === 'f' || e.key === 'F') {
       fitToView();
     } else if (e.key === 'r' || e.key === 'R') {
@@ -1798,6 +2387,59 @@
     input.addEventListener('keydown', e => {
       if (e.key === 'Enter') close(parseFloat(input.value));
       else if (e.key === 'Escape') close(null);
+    });
+    bg.addEventListener('click', e => { if (e.target === bg) close(null); });
+  }
+
+  // Multi-field variant of showModal. Fields: [{label, placeholder?, defaultValue?}].
+  // onOk receives an array of parsed numbers (NaN for empty/invalid).
+  function showFieldsModal({ title, message, fields, onOk, onCancel }) {
+    const bg = document.createElement('div');
+    bg.className = 'modal-bg';
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    const h = document.createElement('h3'); h.textContent = title; modal.appendChild(h);
+    if (message) {
+      const p = document.createElement('p'); p.textContent = message; modal.appendChild(p);
+    }
+    const inputs = fields.map(f => {
+      const lbl = document.createElement('div');
+      lbl.className = 'field-label';
+      lbl.textContent = f.label;
+      modal.appendChild(lbl);
+      const input = document.createElement('input');
+      input.type = 'number'; input.step = 'any'; input.min = '0';
+      input.placeholder = f.placeholder || 'e.g. 1.5';
+      if (f.defaultValue != null && f.defaultValue !== '') input.value = f.defaultValue;
+      modal.appendChild(input);
+      return input;
+    });
+    const actions = document.createElement('div'); actions.className = 'actions';
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancel';
+    const ok = document.createElement('button'); ok.textContent = 'OK'; ok.className = 'primary';
+    actions.appendChild(cancel); actions.appendChild(ok);
+    modal.appendChild(actions);
+    bg.appendChild(modal); document.body.appendChild(bg);
+    setTimeout(() => { inputs[0].focus(); inputs[0].select(); }, 0);
+
+    function submit() {
+      close(inputs.map(i => parseFloat(i.value)));
+    }
+    function close(vals) {
+      bg.remove();
+      if (vals == null) onCancel && onCancel();
+      else onOk && onOk(vals);
+    }
+    cancel.addEventListener('click', () => close(null));
+    ok.addEventListener('click', submit);
+    inputs.forEach((input, i) => {
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (i < inputs.length - 1) inputs[i + 1].focus();
+          else submit();
+        } else if (e.key === 'Escape') close(null);
+      });
     });
     bg.addEventListener('click', e => { if (e.target === bg) close(null); });
   }
