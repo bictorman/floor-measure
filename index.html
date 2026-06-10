@@ -164,6 +164,10 @@
   .measurement.shape { border-left-color: #999; background: #333; }
   .measurement .dims { color: #ccc; }
   .measurement .area { color: #888; font-size: 11px; margin-top: 2px; }
+  .measurement.opening { border-left-color: #e08a3d; }
+  .measurement.opening.window { border-left-color: #ff5fa8; }
+  .measurement.opening .meta.door { color: #e08a3d; }
+  .measurement.opening .meta.window { color: #ff5fa8; }
   #canvas-container.placing { cursor: crosshair; }
 </style>
 </head>
@@ -215,10 +219,12 @@
     </div>
   </div>
   <div class="dropdown">
-    <button id="shape-menu-btn" type="button" title="Add an object (circle or rectangle). Requires the scale to be set first.">Add shape ▾</button>
+    <button id="shape-menu-btn" type="button" title="Add an element (circle, rectangle, door or window). Requires the scale to be set first.">Add element ▾</button>
     <div class="dropdown-menu" id="shape-menu" hidden>
       <button id="add-circle-btn" type="button" title="Add a circular object">Circle…</button>
       <button id="add-rect-btn" type="button" title="Add a rectangular object">Rectangle…</button>
+      <button id="add-door-btn" type="button" title="Add a door opening — click two points to span it across a wall">Door</button>
+      <button id="add-window-btn" type="button" title="Add a window opening — click two points to span it across a wall">Window</button>
     </div>
   </div>
   <span class="sep"></span>
@@ -252,6 +258,9 @@
     imageH: 0,
     lines: [],          // {id, x1, y1, x2, y2, realLength?}
     shapes: [],         // {id, type:'circle'|'rect', cx, cy, radiusM?, widthM?, lengthM?, angle?}
+    openings: [],       // {id, type:'door'|'window', x1, y1, x2, y2} — door/window markers.
+                        // Endpoints in image-pixel coords, like lines. Purely visual: they
+                        // mask the wall they cross but never affect length/area calculations.
     calibrationLineId: null,
     pixelsPerMeter: null,
     zoom: 1,
@@ -266,15 +275,19 @@
   let state = defaultState();
   let nextLineId = 1;
   let nextShapeId = 1;
+  let nextOpeningId = 1;
   let drawingLine = null;   // {x1, y1}
   let mouseWorld = null;
   let panModeToggle = false;
   let drag = null;          // {x, y, isPan, startPanX, startPanY}
   let selectedLineId = null;
   let selectedShapeId = null;
+  let selectedOpeningId = null;
   let clipboardLine = null; // {x1, y1, x2, y2} — last copied line geometry
   let clipboardShape = null; // last copied shape (sans id); null when a line is the active clipboard
+  let clipboardOpening = null; // last copied opening (sans id); null when another type is active
   let pendingShape = null;  // {type, radiusM?, widthM?, lengthM?} — waiting for next click to place
+  let drawOpeningType = null; // 'door' | 'window' while click-click placing an opening
 
   const container = document.getElementById('canvas-container');
   const world = document.getElementById('world');
@@ -311,6 +324,9 @@
   }
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
+  const DOOR_COLOR = '#e08a3d';
+  const WINDOW_COLOR = '#ff5fa8';
+  const openingColor = op => (op.type === 'window' ? WINDOW_COLOR : DOOR_COLOR);
 
   // ---------- persistence ----------
   let saveTimer = null;
@@ -332,11 +348,15 @@
       const loaded = JSON.parse(data);
       state = Object.assign(defaultState(), loaded);
       if (!Array.isArray(state.shapes)) state.shapes = [];
+      if (!Array.isArray(state.openings)) state.openings = [];
       if (state.lines.length) {
         nextLineId = Math.max(...state.lines.map(l => l.id)) + 1;
       }
       if (state.shapes.length) {
         nextShapeId = Math.max(...state.shapes.map(s => s.id)) + 1;
+      }
+      if (state.openings.length) {
+        nextOpeningId = Math.max(...state.openings.map(o => o.id)) + 1;
       }
       if (state.imageDataUrl) {
         loadImage(true);
@@ -365,6 +385,7 @@
     return {
       lines: state.lines.map(l => ({ ...l })),
       shapes: state.shapes.map(s => ({ ...s })),
+      openings: state.openings.map(o => ({ ...o })),
       calibrationLineId: state.calibrationLineId,
       pixelsPerMeter: state.pixelsPerMeter,
     };
@@ -373,6 +394,7 @@
   function applySnapshot(snap) {
     state.lines = snap.lines.map(l => ({ ...l }));
     state.shapes = (snap.shapes || []).map(s => ({ ...s }));
+    state.openings = (snap.openings || []).map(o => ({ ...o }));
     state.calibrationLineId = snap.calibrationLineId;
     state.pixelsPerMeter = snap.pixelsPerMeter;
     if (selectedLineId != null && !state.lines.some(l => l.id === selectedLineId)) {
@@ -380,6 +402,9 @@
     }
     if (selectedShapeId != null && !state.shapes.some(s => s.id === selectedShapeId)) {
       selectedShapeId = null;
+    }
+    if (selectedOpeningId != null && !state.openings.some(o => o.id === selectedOpeningId)) {
+      selectedOpeningId = null;
     }
     if (!state.pixelsPerMeter && pendingShape) {
       pendingShape = null;
@@ -486,12 +511,16 @@
       }
       state = Object.assign(defaultState(), payload.state);
       if (!Array.isArray(state.shapes)) state.shapes = [];
+      if (!Array.isArray(state.openings)) state.openings = [];
       nextLineId = state.lines.length ? Math.max(...state.lines.map(l => l.id)) + 1 : 1;
       nextShapeId = state.shapes.length ? Math.max(...state.shapes.map(s => s.id)) + 1 : 1;
+      nextOpeningId = state.openings.length ? Math.max(...state.openings.map(o => o.id)) + 1 : 1;
       drawingLine = null;
       selectedLineId = null;
       selectedShapeId = null;
+      selectedOpeningId = null;
       pendingShape = null;
+      drawOpeningType = null;
       clearHistory();
       if (state.imageDataUrl) {
         loadImage(true);
@@ -543,7 +572,9 @@
       drawingLine = null;
       selectedLineId = null;
       selectedShapeId = null;
+      selectedOpeningId = null;
       pendingShape = null;
+      drawOpeningType = null;
       clearHistory();
       loadImage(false);
     };
@@ -654,6 +685,7 @@
     const handleR = 4 * scale;
     const fontSize = 13 * scale;
     const labelOffset = 10 * scale;
+    const jambHalf = 9 * scale;   // half-length of an opening's perpendicular jamb tick
 
     // Shapes go below the lines so endpoint handles and labels remain clickable when
     // they overlap a shape. No-op if calibration is missing, since dimensions are in
@@ -664,9 +696,25 @@
       }
     }
 
+    // Openings (doors/windows) erase the wall they cross: a mask punches their span
+    // out of the line group so the floor-plan image shows through, then jamb ticks are
+    // drawn on top. The mask band matches the jamb height so the gap lines up visually.
+    const hasOpenings = state.openings.length > 0;
+    let linesParent = svg;
+    if (hasOpenings) {
+      svg.appendChild(buildOpeningMask(jambHalf));
+      linesParent = document.createElementNS(SVG_NS, 'g');
+      linesParent.setAttribute('mask', 'url(#opening-mask)');
+    }
+
     for (const line of state.lines) {
       const isCal = line.id === state.calibrationLineId;
-      drawLine(line, isCal ? '#5fbf6f' : '#4a9fff', strokeW, handleR, fontSize, labelOffset);
+      drawLine(line, isCal ? '#5fbf6f' : '#4a9fff', strokeW, handleR, fontSize, labelOffset, linesParent);
+    }
+    if (hasOpenings) svg.appendChild(linesParent);
+
+    for (const op of state.openings) {
+      drawOpening(op, strokeW, handleR, jambHalf);
     }
 
     if (drawingLine && mouseWorld) {
@@ -777,7 +825,11 @@
     }
   }
 
-  function drawLine(line, color, strokeW, handleR, fontSize, labelOffset) {
+  // parent (default svg) holds the stroke + endpoint handles; passing the masked group
+  // lets openings punch gaps in the wall. The length label always goes on svg so it
+  // stays visible even where an opening crosses the line.
+  function drawLine(line, color, strokeW, handleR, fontSize, labelOffset, parent) {
+    const p = parent || svg;
     const isSelected = line.id === selectedLineId;
     const sw = isSelected ? strokeW * 1.8 : strokeW;
     const hr = isSelected ? handleR * 1.5 : handleR;
@@ -790,7 +842,7 @@
     ln.setAttribute('stroke', color);
     ln.setAttribute('stroke-width', sw);
     ln.setAttribute('stroke-linecap', 'round');
-    svg.appendChild(ln);
+    p.appendChild(ln);
 
     for (const [x, y] of [[line.x1, line.y1], [line.x2, line.y2]]) {
       const c = document.createElementNS(SVG_NS, 'circle');
@@ -802,7 +854,7 @@
         c.setAttribute('stroke', '#ffaa33');
         c.setAttribute('stroke-width', strokeW);
       }
-      svg.appendChild(c);
+      p.appendChild(c);
     }
 
     const lengthM = computeLengthMeters(line);
@@ -811,14 +863,108 @@
     }
   }
 
+  // Geometry shared by opening rendering, masking and hit-testing. All in image-pixel
+  // coords: u = unit vector along the opening, n = unit perpendicular, (mx,my) = midpoint.
+  function openingGeom(op) {
+    const dx = op.x2 - op.x1, dy = op.y2 - op.y1;
+    const L = Math.hypot(dx, dy) || 1;
+    return {
+      dx, dy, L,
+      ux: dx / L, uy: dy / L,
+      nx: -dy / L, ny: dx / L,
+      mx: (op.x1 + op.x2) / 2, my: (op.y1 + op.y2) / 2,
+    };
+  }
+
+  // A luminance mask: white shows the wall, black rectangles (one per opening, the
+  // band running along the opening) hide it so the image behind the SVG shows through.
+  // userSpaceOnUse with a huge region avoids clipping lines drawn outside the image.
+  function buildOpeningMask(jambHalf) {
+    const defs = document.createElementNS(SVG_NS, 'defs');
+    const mask = document.createElementNS(SVG_NS, 'mask');
+    mask.setAttribute('id', 'opening-mask');
+    mask.setAttribute('maskUnits', 'userSpaceOnUse');
+    mask.setAttribute('x', -100000);
+    mask.setAttribute('y', -100000);
+    mask.setAttribute('width', 200000);
+    mask.setAttribute('height', 200000);
+    const bg = document.createElementNS(SVG_NS, 'rect');
+    bg.setAttribute('x', -100000);
+    bg.setAttribute('y', -100000);
+    bg.setAttribute('width', 200000);
+    bg.setAttribute('height', 200000);
+    bg.setAttribute('fill', '#fff');
+    mask.appendChild(bg);
+    for (const op of state.openings) {
+      const g = openingGeom(op);
+      const angle = Math.atan2(g.dy, g.dx) * 180 / Math.PI;
+      const r = document.createElementNS(SVG_NS, 'rect');
+      r.setAttribute('x', -g.L / 2);
+      r.setAttribute('y', -jambHalf);
+      r.setAttribute('width', g.L);
+      r.setAttribute('height', jambHalf * 2);
+      r.setAttribute('fill', '#000');
+      r.setAttribute('transform', `translate(${g.mx} ${g.my}) rotate(${angle})`);
+      mask.appendChild(r);
+    }
+    defs.appendChild(mask);
+    return defs;
+  }
+
+  // An opening: a dotted line spanning the gap (the wall behind it is erased by
+  // buildOpeningMask) plus two perpendicular jamb ticks with grab handles at the
+  // endpoints. No length label — the size shows only in the sidebar.
+  function drawOpening(op, strokeW, handleR, jambHalf) {
+    const isSel = op.id === selectedOpeningId;
+    const base = openingColor(op);
+    const color = isSel ? '#ffaa33' : base;
+    const sw = isSel ? strokeW * 1.8 : strokeW;
+    const hr = isSel ? handleR * 1.5 : handleR;
+    const g = openingGeom(op);
+
+    const dash = 4 / state.zoom;
+    const span = document.createElementNS(SVG_NS, 'line');
+    span.setAttribute('x1', op.x1);
+    span.setAttribute('y1', op.y1);
+    span.setAttribute('x2', op.x2);
+    span.setAttribute('y2', op.y2);
+    span.setAttribute('stroke', color);
+    span.setAttribute('stroke-width', strokeW);
+    span.setAttribute('stroke-linecap', 'round');
+    span.setAttribute('stroke-dasharray', `${dash} ${dash * 1.5}`);
+    svg.appendChild(span);
+
+    for (const [x, y] of [[op.x1, op.y1], [op.x2, op.y2]]) {
+      const jamb = document.createElementNS(SVG_NS, 'line');
+      jamb.setAttribute('x1', x - g.nx * jambHalf);
+      jamb.setAttribute('y1', y - g.ny * jambHalf);
+      jamb.setAttribute('x2', x + g.nx * jambHalf);
+      jamb.setAttribute('y2', y + g.ny * jambHalf);
+      jamb.setAttribute('stroke', color);
+      jamb.setAttribute('stroke-width', sw);
+      jamb.setAttribute('stroke-linecap', 'round');
+      svg.appendChild(jamb);
+
+      const c = document.createElementNS(SVG_NS, 'circle');
+      c.setAttribute('cx', x);
+      c.setAttribute('cy', y);
+      c.setAttribute('r', hr);
+      c.setAttribute('fill', color);
+      svg.appendChild(c);
+    }
+  }
+
   function drawPreview(strokeW, fontSize, labelOffset) {
     const dash = 5 / state.zoom;
+    const color = drawOpeningType
+      ? (drawOpeningType === 'window' ? WINDOW_COLOR : DOOR_COLOR)
+      : '#ffaa33';
     const ln = document.createElementNS(SVG_NS, 'line');
     ln.setAttribute('x1', drawingLine.x1);
     ln.setAttribute('y1', drawingLine.y1);
     ln.setAttribute('x2', mouseWorld.x);
     ln.setAttribute('y2', mouseWorld.y);
-    ln.setAttribute('stroke', '#ffaa33');
+    ln.setAttribute('stroke', color);
     ln.setAttribute('stroke-width', strokeW);
     ln.setAttribute('stroke-dasharray', `${dash} ${dash}`);
     ln.setAttribute('stroke-linecap', 'round');
@@ -828,7 +974,7 @@
     c.setAttribute('cx', drawingLine.x1);
     c.setAttribute('cy', drawingLine.y1);
     c.setAttribute('r', 4 / state.zoom);
-    c.setAttribute('fill', '#ffaa33');
+    c.setAttribute('fill', color);
     svg.appendChild(c);
 
     if (state.pixelsPerMeter) {
@@ -837,7 +983,7 @@
       const lengthM = Math.sqrt(dx * dx + dy * dy) / state.pixelsPerMeter;
       drawLabel(
         { x1: drawingLine.x1, y1: drawingLine.y1, x2: mouseWorld.x, y2: mouseWorld.y },
-        formatLength(lengthM), '#ffaa33', fontSize, labelOffset
+        formatLength(lengthM), color, fontSize, labelOffset
       );
     }
   }
@@ -897,7 +1043,7 @@
 
   function renderMeasurements() {
     measurementsList.innerHTML = '';
-    if (!state.lines.length && !state.shapes.length) {
+    if (!state.lines.length && !state.shapes.length && !state.openings.length) {
       const hint = document.createElement('div');
       hint.id = 'empty-hint';
       if (!state.imageDataUrl) {
@@ -905,7 +1051,7 @@
       } else if (!state.pixelsPerMeter) {
         hint.textContent = 'Click two points on the image to draw the first line. You will then be asked for its real-world length to set the scale.';
       } else {
-        hint.textContent = 'Click two points to add another measurement, or use Add shape to place an object.';
+        hint.textContent = 'Click two points to add another measurement, or use Add element to place an object, door or window.';
       }
       measurementsList.appendChild(hint);
       return;
@@ -1048,6 +1194,86 @@
       del.textContent = '×';
       del.title = 'Remove this shape';
       del.addEventListener('click', e => { stop(e); removeShape(shape.id); });
+      actions.appendChild(del);
+      row.appendChild(actions);
+
+      measurementsList.appendChild(row);
+    }
+
+    for (const op of state.openings) {
+      const isSel = op.id === selectedOpeningId;
+      const lengthM = computeLengthMeters(op);
+      const typeLabel = op.type === 'window' ? 'Window' : 'Door';
+      const row = document.createElement('div');
+      row.className = 'measurement opening'
+        + (op.type === 'window' ? ' window' : '')
+        + (isSel ? ' selected' : '');
+      row.title = 'Click to select (drag endpoints to resize/rotate, arrow keys to nudge)';
+      row.addEventListener('click', () => {
+        if (selectedOpeningId === op.id) {
+          selectedOpeningId = null;
+        } else {
+          selectedOpeningId = op.id;
+          selectedLineId = null;
+          selectedShapeId = null;
+        }
+        render();
+      });
+
+      const left = document.createElement('div');
+      const label = document.createElement('div');
+      label.className = 'label';
+      if (lengthM == null) {
+        label.textContent = 'no scale';
+      } else {
+        const input = document.createElement('input');
+        input.className = 'length-input';
+        input.type = 'text';
+        input.value = formatLength(lengthM);
+        input.spellcheck = false;
+        input.title = 'Edit width — e.g. 0.9 (m), 90cm, 900mm';
+        input.addEventListener('click', e => { e.stopPropagation(); input.select(); });
+        input.addEventListener('keydown', e => {
+          if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+          else if (e.key === 'Escape') { input.value = formatLength(lengthM); input.blur(); }
+        });
+        input.addEventListener('change', () => {
+          const v = parseLengthInput(input.value);
+          if (v > 0 && Math.abs(v - lengthM) > 1e-6) {
+            setOpeningLengthMeters(op, v);
+          } else {
+            input.value = formatLength(lengthM);
+          }
+        });
+        label.appendChild(input);
+      }
+      left.appendChild(label);
+      const meta = document.createElement('div');
+      meta.className = 'meta ' + op.type;
+      meta.textContent = typeLabel;
+      left.appendChild(meta);
+      row.appendChild(left);
+
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const stop = e => e.stopPropagation();
+      if (isSel) {
+        const horiz = document.createElement('button');
+        horiz.textContent = '↔';
+        horiz.title = 'Make perfectly horizontal';
+        horiz.addEventListener('click', e => { stop(e); alignOpeningToScreenAxis(op, false); });
+        actions.appendChild(horiz);
+        const vert = document.createElement('button');
+        vert.textContent = '↕';
+        vert.title = 'Make perfectly vertical';
+        vert.addEventListener('click', e => { stop(e); alignOpeningToScreenAxis(op, true); });
+        actions.appendChild(vert);
+      }
+      const del = document.createElement('button');
+      del.className = 'del';
+      del.textContent = '×';
+      del.title = 'Remove this ' + typeLabel.toLowerCase();
+      del.addEventListener('click', e => { stop(e); removeOpening(op.id); });
       actions.appendChild(del);
       row.appendChild(actions);
 
@@ -1310,6 +1536,7 @@
       onOk: ([r]) => {
         if (!(r > 0)) return;
         drawingLine = null;
+        drawOpeningType = null;
         pendingShape = { type: 'circle', radiusM: r };
         updatePlacingCursor();
         render();
@@ -1329,6 +1556,7 @@
       onOk: ([w, l]) => {
         if (!(w > 0) || !(l > 0)) return;
         drawingLine = null;
+        drawOpeningType = null;
         pendingShape = { type: 'rect', widthM: w, lengthM: l };
         updatePlacingCursor();
         render();
@@ -1429,7 +1657,63 @@
   }
 
   function updatePlacingCursor() {
-    container.classList.toggle('placing', !!pendingShape);
+    container.classList.toggle('placing', !!pendingShape || !!drawOpeningType);
+  }
+
+  // ---------- openings (doors / windows) ----------
+  // Click "Door"/"Window" to enter a click-click draw mode (same as drawing a line).
+  // Openings need the scale set, matching the rest of the Add element menu.
+  function startDrawOpening(type) {
+    if (!state.pixelsPerMeter) return;
+    pendingShape = null;
+    drawingLine = null;
+    drawOpeningType = type;
+    selectedLineId = null;
+    selectedShapeId = null;
+    selectedOpeningId = null;
+    updatePlacingCursor();
+    render();
+  }
+
+  function cancelDrawOpening() {
+    if (!drawOpeningType && !drawingLine) return;
+    drawOpeningType = null;
+    drawingLine = null;
+    updatePlacingCursor();
+    render();
+  }
+
+  function removeOpening(id) {
+    if (!state.openings.some(o => o.id === id)) return;
+    commit();
+    state.openings = state.openings.filter(o => o.id !== id);
+    if (selectedOpeningId === id) selectedOpeningId = null;
+    save();
+    render();
+  }
+
+  // Resize an opening from its midpoint to the requested real-world length, keeping its
+  // direction — the same midpoint-anchored resize used for lines (sans calibration).
+  function setOpeningLengthMeters(op, meters) {
+    if (!state.pixelsPerMeter || !(meters > 0)) return;
+    const dx = op.x2 - op.x1;
+    const dy = op.y2 - op.y1;
+    const L = Math.hypot(dx, dy);
+    if (L < 0.5) return;
+    const targetPx = meters * state.pixelsPerMeter;
+    if (Math.abs(targetPx - L) < 0.001) return;
+    const cx = (op.x1 + op.x2) / 2;
+    const cy = (op.y1 + op.y2) / 2;
+    const half = targetPx / 2;
+    const ux = dx / L;
+    const uy = dy / L;
+    commit();
+    op.x1 = cx - ux * half;
+    op.y1 = cy - uy * half;
+    op.x2 = cx + ux * half;
+    op.y2 = cy + uy * half;
+    save();
+    render();
   }
 
   function updateAddShapeBtn() {
@@ -1437,8 +1721,8 @@
     if (shapeMenuBtn) {
       shapeMenuBtn.disabled = !enabled;
       shapeMenuBtn.title = enabled
-        ? 'Add an object (circle or rectangle)'
-        : 'Add an object — draw a line first to set the scale.';
+        ? 'Add an element (circle, rectangle, door or window)'
+        : 'Add an element — draw a line first to set the scale.';
     }
     if (!enabled && shapeMenu && !shapeMenu.hidden) {
       shapeMenu.hidden = true;
@@ -1522,25 +1806,59 @@
     return null;
   }
 
-  // Rotate the line about its midpoint so it aligns with the screen's vertical
-  // (or horizontal) axis. Length is preserved; image-space direction is derived
-  // from world rotation so the button matches what the user sees.
-  function alignLineToScreenAxis(line, screenVertical) {
-    const cx = (line.x1 + line.x2) / 2;
-    const cy = (line.y1 + line.y2) / 2;
-    const L = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
-    if (L < 0.5) return;
+  // Returns {opening, endpoint} where endpoint is 1, 2, or 0 (whole opening), or null.
+  // Mirrors hitTest: endpoints take priority over the body.
+  function hitTestOpening(imgX, imgY) {
+    const handleR = HANDLE_HIT_SCREEN / state.zoom;
+    for (let i = state.openings.length - 1; i >= 0; i--) {
+      const op = state.openings[i];
+      if (Math.hypot(imgX - op.x1, imgY - op.y1) <= handleR) return { opening: op, endpoint: 1 };
+      if (Math.hypot(imgX - op.x2, imgY - op.y2) <= handleR) return { opening: op, endpoint: 2 };
+    }
+    const lineR = LINE_HIT_SCREEN / state.zoom;
+    for (let i = state.openings.length - 1; i >= 0; i--) {
+      const op = state.openings[i];
+      if (distToSegment(imgX, imgY, op.x1, op.y1, op.x2, op.y2) <= lineR) {
+        return { opening: op, endpoint: 0 };
+      }
+    }
+    return null;
+  }
+
+  // Endpoints for a segment aligned to the screen's horizontal/vertical axis, length
+  // preserved about its midpoint. image-space direction is derived from world rotation
+  // so the result matches what the user sees. Returns null for a degenerate segment.
+  function alignedEndpoints(seg, screenVertical) {
+    const cx = (seg.x1 + seg.x2) / 2;
+    const cy = (seg.y1 + seg.y2) / 2;
+    const L = Math.hypot(seg.x2 - seg.x1, seg.y2 - seg.y1);
+    if (L < 0.5) return null;
     const θ = -normRotation() * Math.PI / 180;
     const c = Math.cos(θ), s = Math.sin(θ);
     const sdx = screenVertical ? 0 : 1;
     const sdy = screenVertical ? 1 : 0;
     const idx = sdx * c - sdy * s;
     const idy = sdx * s + sdy * c;
-    commit();
     const hx = idx * L / 2;
     const hy = idy * L / 2;
-    line.x1 = cx - hx; line.y1 = cy - hy;
-    line.x2 = cx + hx; line.y2 = cy + hy;
+    return { x1: cx - hx, y1: cy - hy, x2: cx + hx, y2: cy + hy };
+  }
+
+  function alignLineToScreenAxis(line, screenVertical) {
+    const a = alignedEndpoints(line, screenVertical);
+    if (!a) return;
+    commit();
+    line.x1 = a.x1; line.y1 = a.y1; line.x2 = a.x2; line.y2 = a.y2;
+    recomputeCalibrationIfNeeded(line);
+    save();
+    render();
+  }
+
+  function alignOpeningToScreenAxis(op, screenVertical) {
+    const a = alignedEndpoints(op, screenVertical);
+    if (!a) return;
+    commit();
+    op.x1 = a.x1; op.y1 = a.y1; op.x2 = a.x2; op.y2 = a.y2;
     save();
     render();
   }
@@ -1554,12 +1872,17 @@
   }
 
   function updateHoverCursor() {
-    if (pendingShape) {
+    if (pendingShape || drawOpeningType) {
       container.style.cursor = ''; // .placing class supplies crosshair
       return;
     }
     if (panModeToggle || drawingLine || !state.imageDataUrl || !mouseWorld) {
       container.style.cursor = '';
+      return;
+    }
+    const openingHit = hitTestOpening(mouseWorld.x, mouseWorld.y);
+    if (openingHit) {
+      container.style.cursor = openingHit.endpoint === 0 ? 'move' : 'grab';
       return;
     }
     const lineHit = hitTest(mouseWorld.x, mouseWorld.y);
@@ -1603,9 +1926,32 @@
       return;
     }
 
-    // While drawing, mousedown is just part of the click that places the next point.
-    if (!drawingLine) {
+    // While drawing a line or placing an opening, mousedown is just part of the click
+    // that places the next point — don't grab existing elements (doors land on walls,
+    // so a wall under the cursor must not steal the click).
+    if (!drawingLine && !drawOpeningType) {
       const pt = screenToWorld(e.clientX, e.clientY);
+      const openingHit = hitTestOpening(pt.x, pt.y);
+      if (openingHit) {
+        const op = openingHit.opening;
+        drag = {
+          type: openingHit.endpoint === 0 ? 'move-opening' : 'move-opening-handle',
+          x: e.clientX, y: e.clientY,
+          opening: op,
+          endpoint: openingHit.endpoint,
+          startImg: pt,
+          orig: { x1: op.x1, y1: op.y1, x2: op.x2, y2: op.y2 },
+          moved: false,
+        };
+        if (selectedOpeningId !== op.id) {
+          selectedOpeningId = op.id;
+          selectedLineId = null;
+          selectedShapeId = null;
+          render();
+        }
+        container.classList.add('grabbing');
+        return;
+      }
       const hit = hitTest(pt.x, pt.y);
       if (hit) {
         drag = {
@@ -1620,6 +1966,7 @@
         if (selectedLineId !== hit.line.id) {
           selectedLineId = hit.line.id;
           selectedShapeId = null;
+          selectedOpeningId = null;
           render();
         }
         container.classList.add('grabbing');
@@ -1640,6 +1987,7 @@
         if (selectedShapeId !== s.id) {
           selectedShapeId = s.id;
           selectedLineId = null;
+          selectedOpeningId = null;
           render();
         }
         container.classList.add('grabbing');
@@ -1686,6 +2034,26 @@
           drag.line.y2 = drag.orig.y2 + ddy;
         }
         render();
+      } else if (drag.moved && (drag.type === 'move-opening' || drag.type === 'move-opening-handle')) {
+        if (!drag.committed) { commit(); drag.committed = true; }
+        const ddx = mouseWorld.x - drag.startImg.x;
+        const ddy = mouseWorld.y - drag.startImg.y;
+        const op = drag.opening;
+        if (drag.type === 'move-opening-handle') {
+          if (drag.endpoint === 1) {
+            op.x1 = drag.orig.x1 + ddx;
+            op.y1 = drag.orig.y1 + ddy;
+          } else {
+            op.x2 = drag.orig.x2 + ddx;
+            op.y2 = drag.orig.y2 + ddy;
+          }
+        } else {
+          op.x1 = drag.orig.x1 + ddx;
+          op.y1 = drag.orig.y1 + ddy;
+          op.x2 = drag.orig.x2 + ddx;
+          op.y2 = drag.orig.y2 + ddy;
+        }
+        render();
       } else if (drag.moved && drag.type === 'move-shape') {
         if (!drag.committed) { commit(); drag.committed = true; }
         const ddx = mouseWorld.x - drag.startImg.x;
@@ -1726,6 +2094,11 @@
       updateHoverCursor();
       return;
     }
+    if (d.type === 'move-opening' || d.type === 'move-opening-handle') {
+      if (d.moved) { save(); render(); }
+      updateHoverCursor();
+      return;
+    }
     if (d.type === 'click-place-shape') {
       if (d.moved) return;
       if (!container.contains(e.target)) return;
@@ -1747,16 +2120,39 @@
       render();
       return;
     }
+    if (Math.hypot(pt.x - drawingLine.x1, pt.y - drawingLine.y1) < 0.5) {
+      drawingLine = null;
+      render();
+      return;
+    }
+
+    // Placing a door/window: same two-click gesture as a line, but it lands in
+    // state.openings and reverts to normal drawing afterwards.
+    if (drawOpeningType) {
+      commit();
+      const op = {
+        id: nextOpeningId++,
+        type: drawOpeningType,
+        x1: drawingLine.x1, y1: drawingLine.y1,
+        x2: pt.x, y2: pt.y,
+      };
+      state.openings.push(op);
+      selectedOpeningId = op.id;
+      selectedLineId = null;
+      selectedShapeId = null;
+      drawingLine = null;
+      drawOpeningType = null;
+      updatePlacingCursor();
+      save();
+      render();
+      return;
+    }
+
     const line = {
       id: nextLineId++,
       x1: drawingLine.x1, y1: drawingLine.y1,
       x2: pt.x, y2: pt.y,
     };
-    if (Math.hypot(line.x2 - line.x1, line.y2 - line.y1) < 0.5) {
-      drawingLine = null;
-      render();
-      return;
-    }
     commit();
     state.lines.push(line);
     drawingLine = null;
@@ -1914,6 +2310,13 @@
       drawLineCanvas(ctx, line, color, strokeW, handleR, fontSize, labelOffset, tx, ty, θrad);
     }
 
+    // Openings on top of the lines, mirroring the screen: repaint the image through the
+    // gap (covering the wall) then draw the jambs.
+    const jambHalf = base * 6;
+    for (const op of state.openings) {
+      drawOpeningCanvas(ctx, op, openingColor(op), jambHalf, drawW, drawH, tx, ty, θrad);
+    }
+
     const areaFontSize = Math.max(16, base * 8);
     for (const a of findLoopAreas()) {
       drawAreaLabelCanvas(ctx, a, areaFontSize, tx, ty, θrad);
@@ -1973,6 +2376,55 @@
       ctx.fill();
       ctx.stroke();
       ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  function drawOpeningCanvas(ctx, op, color, jambHalf, drawW, drawH, tx, ty, θrad) {
+    const g = openingGeom(op);
+    const hw = g.L / 2;
+    // Band corners in image-pixel coords (along ± perpendicular about the midpoint).
+    const corners = [[1, 1], [1, -1], [-1, -1], [-1, 1]].map(([a, b]) => [
+      g.mx + g.ux * hw * a + g.nx * jambHalf * b,
+      g.my + g.uy * hw * a + g.ny * jambHalf * b,
+    ]);
+
+    // Repaint the image clipped to the band so the gap shows the floor plan, not the wall.
+    ctx.save();
+    ctx.translate(tx, ty);
+    ctx.rotate(θrad);
+    ctx.beginPath();
+    ctx.moveTo(corners[0][0], corners[0][1]);
+    for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i][0], corners[i][1]);
+    ctx.closePath();
+    ctx.clip();
+    ctx.globalAlpha = state.imageOpacity == null ? 1 : Math.max(0, Math.min(1, state.imageOpacity));
+    ctx.drawImage(img, 0, 0, drawW, drawH);
+    ctx.restore();
+
+    // Dotted line spanning the gap, then jamb ticks + endpoint handles on top.
+    ctx.save();
+    ctx.translate(tx, ty);
+    ctx.rotate(θrad);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = jambHalf * 0.22;
+    ctx.lineCap = 'round';
+    const dash = jambHalf * 0.5;
+    ctx.setLineDash([dash, dash * 1.5]);
+    ctx.beginPath();
+    ctx.moveTo(op.x1, op.y1);
+    ctx.lineTo(op.x2, op.y2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const [x, y] of [[op.x1, op.y1], [op.x2, op.y2]]) {
+      ctx.beginPath();
+      ctx.moveTo(x - g.nx * jambHalf, y - g.ny * jambHalf);
+      ctx.lineTo(x + g.nx * jambHalf, y + g.ny * jambHalf);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(x, y, jambHalf * 0.28, 0, Math.PI * 2);
+      ctx.fill();
     }
     ctx.restore();
   }
@@ -2053,6 +2505,8 @@
   ];
   document.getElementById('add-circle-btn').addEventListener('click', addCircleAction);
   document.getElementById('add-rect-btn').addEventListener('click', addRectAction);
+  document.getElementById('add-door-btn').addEventListener('click', () => startDrawOpening('door'));
+  document.getElementById('add-window-btn').addEventListener('click', () => startDrawOpening('window'));
   function setDropdownOpen(target, open) {
     for (const d of dropdowns) {
       const active = d === target && open;
@@ -2152,17 +2606,20 @@
   });
 
   document.getElementById('clear-lines-btn').addEventListener('click', () => {
-    if (!state.lines.length && !state.shapes.length) return;
-    if (!confirm('Remove all measurements and shapes (including the scale reference)?')) return;
+    if (!state.lines.length && !state.shapes.length && !state.openings.length) return;
+    if (!confirm('Remove all measurements, shapes, doors and windows (including the scale reference)?')) return;
     commit();
     state.lines = [];
     state.shapes = [];
+    state.openings = [];
     state.calibrationLineId = null;
     state.pixelsPerMeter = null;
     drawingLine = null;
     selectedLineId = null;
     selectedShapeId = null;
+    selectedOpeningId = null;
     pendingShape = null;
+    drawOpeningType = null;
     updatePlacingCursor();
     save();
     render();
@@ -2173,10 +2630,13 @@
     state = defaultState();
     nextLineId = 1;
     nextShapeId = 1;
+    nextOpeningId = 1;
     drawingLine = null;
     selectedLineId = null;
     selectedShapeId = null;
+    selectedOpeningId = null;
     pendingShape = null;
+    drawOpeningType = null;
     updatePlacingCursor();
     clearHistory();
     img.src = '';
@@ -2200,6 +2660,7 @@
     if (!line) return;
     clipboardLine = { x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2 };
     clipboardShape = null;
+    clipboardOpening = null;
   }
 
   // Paste a copied line at the exact same image-pixel coordinates. The new line
@@ -2227,6 +2688,47 @@
     const { id, ...rest } = shape;
     clipboardShape = { ...rest };
     clipboardLine = null;
+    clipboardOpening = null;
+  }
+
+  function copySelectedOpening() {
+    const op = state.openings.find(o => o.id === selectedOpeningId);
+    if (!op) return;
+    clipboardOpening = { type: op.type, x1: op.x1, y1: op.y1, x2: op.x2, y2: op.y2 };
+    clipboardLine = null;
+    clipboardShape = null;
+  }
+
+  // Offset the duplicate (like pasteShape) so it doesn't hide exactly under the original.
+  function pasteOpening() {
+    if (!clipboardOpening || !state.imageDataUrl) return;
+    commit();
+    const op = {
+      id: nextOpeningId++,
+      type: clipboardOpening.type,
+      x1: clipboardOpening.x1 + SHAPE_PASTE_OFFSET, y1: clipboardOpening.y1 + SHAPE_PASTE_OFFSET,
+      x2: clipboardOpening.x2 + SHAPE_PASTE_OFFSET, y2: clipboardOpening.y2 + SHAPE_PASTE_OFFSET,
+    };
+    state.openings.push(op);
+    selectedOpeningId = op.id;
+    selectedLineId = null;
+    selectedShapeId = null;
+    save();
+    render();
+  }
+
+  function nudgeOpening(sdx, sdy) {
+    const op = state.openings.find(o => o.id === selectedOpeningId);
+    if (!op) return;
+    commit('nudge-opening:' + op.id);
+    const θ = -normRotation() * Math.PI / 180;
+    const c = Math.cos(θ), s = Math.sin(θ);
+    const dx = sdx * c - sdy * s;
+    const dy = sdx * s + sdy * c;
+    op.x1 += dx; op.y1 += dy;
+    op.x2 += dx; op.y2 += dy;
+    save();
+    render();
   }
 
   // Offset the duplicate so the user can see it instead of an invisible stack.
@@ -2296,11 +2798,17 @@
       } else if (selectedShapeId != null) {
         e.preventDefault();
         copySelectedShape();
+      } else if (selectedOpeningId != null) {
+        e.preventDefault();
+        copySelectedOpening();
       }
       return;
     }
     if (mod && (e.key === 'v' || e.key === 'V')) {
-      if (clipboardShape) {
+      if (clipboardOpening) {
+        e.preventDefault();
+        pasteOpening();
+      } else if (clipboardShape) {
         e.preventDefault();
         pasteShape();
       } else if (clipboardLine) {
@@ -2309,19 +2817,22 @@
       }
       return;
     }
-    if (ARROW_DIRS[e.key] && (selectedLineId != null || selectedShapeId != null)) {
+    if (ARROW_DIRS[e.key] && (selectedLineId != null || selectedShapeId != null || selectedOpeningId != null)) {
       e.preventDefault();
       const [dx, dy] = ARROW_DIRS[e.key];
       const step = e.shiftKey ? 10 : 1;
       if (selectedLineId != null) nudgeSelected(dx * step, dy * step);
-      else nudgeShape(dx * step, dy * step);
+      else if (selectedShapeId != null) nudgeShape(dx * step, dy * step);
+      else nudgeOpening(dx * step, dy * step);
       return;
     }
     if (e.key === 'Escape') {
       if (pendingShape) cancelPendingShape();
+      else if (drawOpeningType) cancelDrawOpening();
       else if (drawingLine) { drawingLine = null; render(); }
       else if (selectedLineId != null) { selectedLineId = null; render(); }
       else if (selectedShapeId != null) { selectedShapeId = null; render(); }
+      else if (selectedOpeningId != null) { selectedOpeningId = null; render(); }
     } else if (e.key === 'Delete' || e.key === 'Backspace') {
       if (selectedLineId != null) {
         e.preventDefault();
@@ -2329,6 +2840,9 @@
       } else if (selectedShapeId != null) {
         e.preventDefault();
         removeShape(selectedShapeId);
+      } else if (selectedOpeningId != null) {
+        e.preventDefault();
+        removeOpening(selectedOpeningId);
       }
     } else if (e.key === 'f' || e.key === 'F') {
       fitToView();
